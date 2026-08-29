@@ -8,9 +8,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rtltracer import sql
-from rtltracer.commands import _Source
 from rtltracer.db import Db
 from rtltracer.resolve import resolve
+from rtltracer.source import Source
 
 
 @dataclass
@@ -176,7 +176,7 @@ def _name_edges(cursor, raw: list[dict], direction: str):
     names = {}
     if net_ids:
         names = _name_nets(cursor, net_ids)
-    src_reader = _Source(cursor)
+    src_reader = Source(cursor)
     edges = []
     for r in raw:
         src, tgt = r["src_net_id"], r["tgt_net_id"]
@@ -285,7 +285,7 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
     if found:
         names = _name_nets(cur, trail)
         nodes = [names.get(n, f"<net {n}>") for n in trail]
-        src_reader = _Source(cur)
+        src_reader = Source(cur)
         for a, b in zip(trail, trail[1:]):
             r = cur.execute(sql.load("path_edge"),
                             {"signal_net_id": b, "driver_net_id": a}).fetchone()

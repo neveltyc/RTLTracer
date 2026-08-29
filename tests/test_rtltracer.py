@@ -236,6 +236,18 @@ def test_path_option_smoke():
         assert code == 0
 
 
+def test_path_render_tolerates_null_kind():
+    # A trail edge with no matching driver row has kind=None; the human
+    # renderer must not crash concatenating it into the connector.
+    from rtltracer.cli import _human
+    data = {"from": "a", "to": "b", "found": True, "length": 1,
+            "nodes": ["a", "b"],
+            "edges": [{"source": "a", "target": "b", "kind": None,
+                       "file": None, "line": None, "statement": None}]}
+    out = _human("path", data, {"found": True, "length": 1, "_ms": 0})
+    assert "via ?" in out
+
+
 # --- envelope / exit codes --------------------------------------------------
 
 def test_json_envelope_shape():

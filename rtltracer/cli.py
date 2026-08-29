@@ -171,10 +171,11 @@ def _human(name: str, data: dict, summary: dict) -> str:
         last = [True] * len(levels)
         for i, lv in enumerate(levels):
             d = lv["depth"]
-            for nxt in levels[i + 1:]:
-                if nxt["depth"] < d:
+            for j in range(i + 1, len(levels)):
+                nd = levels[j]["depth"]
+                if nd < d:
                     break
-                if nxt["depth"] == d:
+                if nd == d:
                     last[i] = False
                     break
         last_at = {}
@@ -288,7 +289,7 @@ def _human(name: str, data: dict, summary: dict) -> str:
             lines.append("")
             lines.append(f"  {c.cyan(data['from'])}")
             for e in data.get("edges", []):
-                lines.append(f"    {c.dim('│ via ' + e['kind'])}  {loc(e)}")
+                lines.append(f"    {c.dim('│ via ' + (e['kind'] or '?'))}  {loc(e)}")
                 if e.get("statement"):
                     lines.append(f"    {c.dim('│ ' + e['statement'])}")
                 lines.append(f"  {c.cyan(e['target'])}")

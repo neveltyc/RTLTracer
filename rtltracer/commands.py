@@ -2,12 +2,10 @@
 the renderer turns into terminal text or JSON; SQL stays in rtltracer/sql/."""
 from __future__ import annotations
 
-import hashlib
-from pathlib import Path
-
 from rtltracer import sql
 from rtltracer.db import Db
 from rtltracer.resolve import ResolveError, resolve
+from rtltracer.source import Source, source_state
 
 
 def _names(cursor, net_ids) -> dict[int, str]:
@@ -18,38 +16,8 @@ def _names(cursor, net_ids) -> dict[int, str]:
     return {r["net_id"]: r["full_path"] for r in cursor.execute(text, values)}
 
 
-def _source_state(cursor, file_path: str) -> tuple[str, str, str | None]:
-    """(src_path, sha256, state). Reads nothing; state is 'current'/'stale'/'missing'."""
-    row = cursor.execute(sql.load("trace_source"), {"file_path": file_path}).fetchone()
-    if row is None:
-        return file_path, "", "missing"
-    src = row["src_path"]
-    digest = row["sha256"]
-    try:
-        data = Path(src).read_bytes()
-    except OSError:
-        return src, digest, "missing"
-    if hashlib.sha256(data).hexdigest() == digest:
-        return src, digest, "current"
-    return src, digest, "stale"
-
-
-class _Source:
-    def __init__(self, cursor):
-        self.cursor = cursor
-        self.cache: dict[str, tuple[str, str, str | None]] = {}
-
-    def line(self, file_path: str, line: int | None) -> tuple[str | None, str]:
-        if file_path not in self.cache:
-            self.cache[file_path] = _source_state(self.cursor, file_path)
-        src, digest, state = self.cache[file_path]
-        if state != "current" or line is None:
-            return None, state
-        try:
-            lines = Path(src).read_text(encoding="utf-8", errors="replace").splitlines()
-            return lines[line - 1].strip() if 1 <= line <= len(lines) else None, state
-        except OSError:
-            return None, "missing"
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" + ("" if n == 1 else "s")
 
 
 def info(db: Db) -> dict:
@@ -60,7 +28,7 @@ def info(db: Db) -> dict:
     rows = []
     stale = missing = 0
     for s in sources:
-        src, digest, state = _source_state(cur, s["file_path"])
+        src, digest, state = source_state(cur, s["file_path"])
         rows.append({"path": s["src_path"], "state": state})
         stale += state == "stale"
         missing += state == "missing"
@@ -153,7 +121,7 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
         rows = cur.execute(sql.load("find_net"),
                            {"pattern": pattern, "root_path": root_path, "limit": probe}).fetchall()
         hits = [{"path": r["full_path"], "what": "net",
-                 "detail": f"{r['decl_kind']}, {r['width']} bit" + ("" if r["width"] == 1 else "s")
+                 "detail": f"{r['decl_kind']}, {_plural(r['width'], 'bit')}"
                            if r["width"] is not None else r["decl_kind"]}
                 for r in rows]
     elif kind == "instance":
@@ -164,7 +132,7 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
     else:  # module
         rows = cur.execute(sql.load("find_module"), {"pattern": pattern, "limit": probe}).fetchall()
         hits = [{"path": r["name"], "what": r["def_kind"],
-                 "detail": f"{r['occurrences']} instance" + ("" if r["occurrences"] == 1 else "s")}
+                 "detail": _plural(r["occurrences"], "instance")}
                 for r in rows]
     truncated = limit > 0 and len(hits) > limit
     if truncated:
@@ -189,7 +157,7 @@ def _provenance(row: dict, index: int, dep_kind: str | None) -> str:
     return f"row{index}"
 
 
-def _gates(cur, stmt_id: int | None, source: _Source) -> tuple[list[dict], bool]:
+def _gates(cur, stmt_id: int | None, source: Source) -> tuple[list[dict], bool]:
     if stmt_id is None:
         return [], False
     rows = cur.execute(sql.load("trace_gates"), {"stmt_id": stmt_id}).fetchall()
@@ -252,7 +220,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
     sig = resolve(cur, signal, top)
     name = "trace_load" if load else "trace_driver"
     rows = cur.execute(sql.load(name), {"net_id": sig.net_id, "ctl": int(ctl)}).fetchall()
-    source = _Source(cur)
+    source = Source(cur)
     hops = []
     procedures: list[dict] = []
     proc_index: dict[int, int] = {}
