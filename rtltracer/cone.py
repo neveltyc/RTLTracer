@@ -5,7 +5,6 @@ next_ctx).  Gating: --no-ctl excludes control arcs; --follow-ctl /
 --ctl-depth=N follow them instead of stopping at them."""
 from __future__ import annotations
 
-from collections import deque
 from dataclasses import dataclass
 
 from rtltracer import sql

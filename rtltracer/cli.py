@@ -23,12 +23,41 @@ import time
 from pathlib import Path
 
 from rtltracer import __version__
-from rtltracer.db import Db, DbError, open_db
+from rtltracer.db import DbError, open_db
 from rtltracer import commands
 from rtltracer import cone
 from rtltracer.resolve import ResolveError
 
 TOOL = "rtltracer"
+
+_HELP = """\
+commands (each takes DB, the design database):
+  info    DB              seal, sources, analysis status
+  tree    DB [SCOPE]      hierarchy levels
+  find    DB PATTERN      match nets by name glob
+  trace   DB SIGNAL       one hop: who drives it
+  fanin   DB SIGNAL       everything driving it, transitively
+  fanout  DB SIGNAL       everything it drives, transitively
+  path    DB FROM TO      shortest driver route between two signals
+
+options by command:
+  --json                        JSON instead of human text (any command)
+  tree    --depth N (0=all)     --limit N (0=all)
+  find    --instances|--modules match instances or modules instead of nets
+          --limit N (0=all)
+  trace   --load                readers instead of drivers
+          --ctl                 include control (gating) arcs
+  fanin / fanout / path:
+          --depth N             max hops, 0 = unbounded
+          --comb                stop at flops and latches
+          --through-latch       with --comb, cross latches
+          --no-ctl              drop control arcs
+          --follow-ctl          follow control arcs transitively
+          --ctl-depth N         follow control arcs, at most N levels
+  --top NAME                    choose the top if several elaborated (trace + cones)
+
+SIGNAL, FROM and TO are hierarchical paths (top.u_core.q); a leading testbench
+scope is dropped. Add --json to any command for the machine-readable envelope."""
 
 
 class _Ink:
@@ -102,9 +131,9 @@ def _human(name: str, data: dict, summary: dict) -> str:
     c = _Ink(sys.stdout)
     lines = []
 
-    def loc(e, width=0):
+    def loc(e):
         s = f"{e['file']}:{e['line']}" if e.get("file") and e.get("line") else ""
-        return c.dim(f"{s:<{width}}") if width else c.dim(s)
+        return c.dim(s)
 
     def plur(n, word):
         return f"{n} {word}" + ("" if n == 1 else "s")
@@ -275,77 +304,81 @@ def _resolve_opt(v: str | None, default=""):
 
 
 def main():
-    p = argparse.ArgumentParser(prog=TOOL, description="Signal trace over an rtl-designdb design database.")
-    jp = argparse.ArgumentParser(add_help=False)
-    jp.add_argument("--json", action="store_true", help="Emit JSON envelope instead of human text")
-    sub = p.add_subparsers(dest="command", required=True)
+    p = argparse.ArgumentParser(
+        prog=TOOL, formatter_class=argparse.RawDescriptionHelpFormatter,
+        usage="%(prog)s [-h] [-V] COMMAND [ARGS]",
+        description="Signal trace, driver and load analysis over an rtl-designdb "
+                    "design database (schema v20).",
+        epilog=_HELP)
+    p.add_argument("-V", "--version", action="version", version=f"{TOOL} {__version__}")
 
-    # info
-    pi = sub.add_parser("info", parents=[jp], help="Database seal and source status")
-    pi.add_argument("db", type=Path)
+    # -h anywhere, including after a subcommand, shows this one help.
+    class _Help(argparse.Action):
+        def __init__(self, option_strings, dest, **kw):
+            super().__init__(option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kw)
 
-    # tree
-    pt = sub.add_parser("tree", parents=[jp], help="Hierarchy levels")
-    pt.add_argument("db", type=Path)
-    pt.add_argument("scope", nargs="?", default=None, help="Start scope")
-    pt.add_argument("--depth", type=int, default=3, help="Levels deep; 0 = all")
-    pt.add_argument("--limit", type=int, default=0, help="Max levels shown; 0 = all")
+        def __call__(self, *_a, **_k):
+            p.print_help()
+            p.exit()
 
-    # find
-    pf = sub.add_parser("find", parents=[jp], help="Find by name")
-    pf.add_argument("db", type=Path)
-    pf.add_argument("pattern", help="Name glob (use * and ?)")
-    pf.add_argument("--instances", action="store_true")
-    pf.add_argument("--modules", action="store_true")
-    pf.add_argument("--limit", type=int, default=200, help="Max hits; 0 = all")
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("-h", "--help", action=_Help, help=argparse.SUPPRESS)
+    common.add_argument("--json", action="store_true")
 
-    # trace
-    ptr = sub.add_parser("trace", parents=[jp], help="One hop: who drives / reads a signal")
-    ptr.add_argument("db", type=Path)
-    ptr.add_argument("signal", help="Hierarchical path, e.g. top.u_core.result")
-    ptr.add_argument("--load", action="store_true", help="Show loads instead of drivers")
-    ptr.add_argument("--ctl", action="store_true", help="Include control (gating) arcs")
-    ptr.add_argument("--top", default="", help="Top module name if several")
+    walk = argparse.ArgumentParser(add_help=False)  # fanin / fanout / path
+    walk.add_argument("--comb", action="store_true")
+    walk.add_argument("--through-latch", action="store_true")
+    walk.add_argument("--no-ctl", action="store_true")
+    walk.add_argument("--follow-ctl", action="store_true")
+    walk.add_argument("--ctl-depth", type=int, default=None, metavar="N")
+    walk.add_argument("--top", default="", metavar="NAME")
 
-    # fanin
-    pfi = sub.add_parser("fanin", parents=[jp], help="Everything driving a signal, transitively")
-    pfi.add_argument("db", type=Path)
-    pfi.add_argument("signal")
-    pfi.add_argument("--depth", type=int, default=4, help="Max hops; 0 = unbounded")
-    pfi.add_argument("--comb", action="store_true", help="Stop at state elements")
-    pfi.add_argument("--through-latch", action="store_true", help="Under --comb, cross latches anyway")
-    pfi.add_argument("--no-ctl", action="store_true", help="Exclude control arcs")
-    pfi.add_argument("--follow-ctl", action="store_true", help="Follow control arcs transitively")
-    pfi.add_argument("--ctl-depth", type=int, default=None, metavar="N",
-                     help="Follow control arcs, at most N levels")
-    pfi.add_argument("--top", default="")
+    # The one help text lives in _HELP; the auto per-command listing is hidden.
+    sub = p.add_subparsers(dest="command", metavar="COMMAND", required=True,
+                           help=argparse.SUPPRESS)
 
-    # fanout
-    pfo = sub.add_parser("fanout", parents=[jp], help="Everything a signal drives, transitively")
-    pfo.add_argument("db", type=Path)
-    pfo.add_argument("signal")
-    pfo.add_argument("--depth", type=int, default=4)
-    pfo.add_argument("--comb", action="store_true")
-    pfo.add_argument("--through-latch", action="store_true")
-    pfo.add_argument("--no-ctl", action="store_true")
-    pfo.add_argument("--follow-ctl", action="store_true")
-    pfo.add_argument("--ctl-depth", type=int, default=None, metavar="N",
-                     help="Follow control arcs, at most N levels")
-    pfo.add_argument("--top", default="")
+    def cmd(name, *parents):
+        return sub.add_parser(name, parents=[common, *parents], add_help=False)
 
-    # path
-    pp = sub.add_parser("path", parents=[jp], help="Shortest route between two signals")
-    pp.add_argument("db", type=Path)
-    pp.add_argument("from_signal", help="Start signal")
-    pp.add_argument("to_signal", help="Target signal")
-    pp.add_argument("--depth", type=int, default=0, help="Max hops; 0 = unbounded")
-    pp.add_argument("--comb", action="store_true")
-    pp.add_argument("--through-latch", action="store_true")
-    pp.add_argument("--no-ctl", action="store_true")
-    pp.add_argument("--follow-ctl", action="store_true")
-    pp.add_argument("--ctl-depth", type=int, default=None, metavar="N",
-                     help="Follow control arcs, at most N levels")
-    pp.add_argument("--top", default="")
+    pi = cmd("info")
+    pi.add_argument("db", metavar="DB", type=Path)
+
+    pt = cmd("tree")
+    pt.add_argument("db", metavar="DB", type=Path)
+    pt.add_argument("scope", nargs="?", default=None, metavar="SCOPE")
+    pt.add_argument("--depth", type=int, default=3, metavar="N")
+    pt.add_argument("--limit", type=int, default=0, metavar="N")
+
+    pf = cmd("find")
+    pf.add_argument("db", metavar="DB", type=Path)
+    pf.add_argument("pattern", metavar="PATTERN")
+    what = pf.add_mutually_exclusive_group()
+    what.add_argument("--instances", action="store_true")
+    what.add_argument("--modules", action="store_true")
+    pf.add_argument("--limit", type=int, default=200, metavar="N")
+
+    ptr = cmd("trace")
+    ptr.add_argument("db", metavar="DB", type=Path)
+    ptr.add_argument("signal", metavar="SIGNAL")
+    ptr.add_argument("--load", action="store_true")
+    ptr.add_argument("--ctl", action="store_true")
+    ptr.add_argument("--top", default="", metavar="NAME")
+
+    pfi = cmd("fanin", walk)
+    pfi.add_argument("db", metavar="DB", type=Path)
+    pfi.add_argument("signal", metavar="SIGNAL")
+    pfi.add_argument("--depth", type=int, default=4, metavar="N")
+
+    pfo = cmd("fanout", walk)
+    pfo.add_argument("db", metavar="DB", type=Path)
+    pfo.add_argument("signal", metavar="SIGNAL")
+    pfo.add_argument("--depth", type=int, default=4, metavar="N")
+
+    pp = cmd("path", walk)
+    pp.add_argument("db", metavar="DB", type=Path)
+    pp.add_argument("from_signal", metavar="FROM")
+    pp.add_argument("to_signal", metavar="TO")
+    pp.add_argument("--depth", type=int, default=0, metavar="N")
 
     args = p.parse_args()
     try:
