@@ -119,8 +119,7 @@ def _child(cursor, node: int, name: str):
 def _walk(cursor, root: int, levels: list[str], leaf: str) -> dict | None:
     """Walk the tree down `levels`, then find `leaf` as a net of the
     instance reached. Returns None when the path does not resolve."""
-    root_node = cursor.execute(
-        "SELECT node_id, inst_id FROM v_tree_node WHERE node_id = ?", (root,)).fetchone()
+    root_node = cursor.execute(sql.load("node_by_id"), {"node_id": root}).fetchone()
     if root_node is None:
         return None
     node = root_node["node_id"]
@@ -176,8 +175,8 @@ def _above_the_design(cursor, root: int, root_inst: int | None, root_name: str,
         if _child(cursor, root, level) is not None:
             return i
         if i + 1 == len(levels) and root_inst is not None:
-            net = cursor.execute("SELECT 1 FROM v_net WHERE inst_id = ? AND net_name = ?",
-                                 (root_inst, level)).fetchone()
+            net = cursor.execute(sql.load("net_exists"),
+                                 {"inst_id": root_inst, "name": level}).fetchone()
             if net is not None:
                 return i
     return None
@@ -210,8 +209,7 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
     if root_row is None:
         raise ResolveError("NO_TOP", "this database elaborated no top")
     root_id, root_name = root_row["node_id"], root_row["node_name"]
-    root = cursor.execute("SELECT node_id, inst_id FROM v_tree_node WHERE node_id = ?",
-                          (root_id,)).fetchone()
+    root = cursor.execute(sql.load("node_by_id"), {"node_id": root_id}).fetchone()
     root_inst = root["inst_id"] if root else None
 
     above = _above_the_design(cursor, root_id, root_inst, root_name, all_levels)

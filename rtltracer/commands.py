@@ -115,9 +115,7 @@ def tree(db: Db, scope: str | None, depth: int = 3, limit: int = 0) -> dict:
             node_id, path = sig.inst_id, sig.node_path
         except ResolveError:
             # Not a net: try the tree level itself.
-            row = cur.execute(
-                "SELECT node_id, node_path FROM v_node_path WHERE node_path = ?", (scope,)
-            ).fetchone()
+            row = cur.execute(sql.load("node_by_path"), {"node_path": scope}).fetchone()
             if row is None:
                 raise ResolveError("SCOPE_NOT_FOUND", f"'{scope}' does not name a scope")
             node_id, path = row["node_id"], row["node_path"]
@@ -260,14 +258,13 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
     far_ids = set()
     raw = [dict(r) for r in rows]
 
-    # v_node_path walks the whole tree per query, so materialise it once and
-    # serve every hop's scope from the map rather than re-walking per hop.
+    # Serve every hop's scope from one whole-tree read (see node_paths.sql),
+    # never a lookup per hop.
     node_paths: dict[int, str] = {}
     def scope_path(node_id: int) -> str | None:
         if not node_paths:
-            node_paths.update(
-                (r["node_id"], r["node_path"])
-                for r in cur.execute("SELECT node_id, node_path FROM v_node_path"))
+            node_paths.update((r["node_id"], r["node_path"])
+                              for r in cur.execute(sql.load("node_paths")))
         return node_paths.get(node_id)
 
     # dep kinds (only meaningful on dataflow rows)

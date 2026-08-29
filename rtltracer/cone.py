@@ -45,8 +45,7 @@ def _unreachable(cursor, facts: Facts, stmt_id) -> bool:
     if not facts.dead or stmt_id is None:
         return False
     if stmt_id not in facts.stmt_branch:
-        row = cursor.execute(
-            "SELECT branch_id FROM v_stmt WHERE stmt_id = ?", (stmt_id,)).fetchone()
+        row = cursor.execute(sql.load("stmt_branch"), {"stmt_id": stmt_id}).fetchone()
         facts.stmt_branch[stmt_id] = row["branch_id"] if row else None
     return facts.stmt_branch[stmt_id] in facts.dead
 
@@ -285,10 +284,8 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
         names = _name_nets(cur, trail)
         nodes = [names.get(n, f"<net {n}>") for n in trail]
         for a, b in zip(trail, trail[1:]):
-            r = cur.execute(
-                "SELECT driver_kind, dep_id, file_path, src_line FROM v_driver "
-                "WHERE signal_net_id = ? AND driver_net_id = ? LIMIT 1",
-                (b, a)).fetchone()
+            r = cur.execute(sql.load("path_edge"),
+                            {"signal_net_id": b, "driver_net_id": a}).fetchone()
             edges.append({
                 "source": names.get(a, f"<net {a}>"),
                 "target": names.get(b, f"<net {b}>"),
