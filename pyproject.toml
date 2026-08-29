@@ -1,0 +1,15 @@
+[project]
+name = "rtltracer"
+version = "0.1.0"
+description = "Signal trace, driver and load analysis over an rtl-designdb design database — pure SQL."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+rtltracer = "rtltracer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["rtltracer*"]
+
+[tool.setuptools.package-data]
+"rtltracer" = ["sql/*.sql"]
