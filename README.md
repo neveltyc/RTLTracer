@@ -52,6 +52,71 @@ rtltracer fanin design.db top.q --follow-ctl   # 跟着条件信号继续追
 rtltracer fanin design.db top.q --ctl-depth 2  # 条件信号只追 2 层
 ```
 
+## 输出信息解读
+
+终端输出带颜色，含义如下：
+
+```
+青色    信号或实例路径
+→       信号流向
+暗色    源码位置，形如 文件:行
+黄色    条件门控
+```
+
+管道、重定向、或设了 `NO_COLOR` 时，输出自动转成纯文本。
+
+`tree` 用 `├──` `└──` `│` 画层次，末尾是模块名和网络数。
+
+```
+top              top       12 nets
+├── u_alu        alu        8 nets
+└── u_regfile    regfile   20 nets
+```
+
+`trace` 只看一跳，也就是谁直接驱动这个信号。
+每条驱动带序号，字段都带标签。
+
+```
+signal top.u_sub.dout  [8 bits]        # 目标信号和位宽
+2 drivers                              # 找到几条驱动，正常时只报数量
+
+  [1] if (rst) dout <= 8'h0;           # 第 1 条驱动，先给出源码
+      kind          constant           # 驱动种类
+      location      sample.sv:13        # 源码位置
+      timing block  always_ff @(posedge clk)   # 所在时序块
+      condition     if (then) [rst]     # 门控条件
+
+  [2] else     dout <= din;
+      kind          data
+      location      sample.sv:14
+      timing block  always_ff @(posedge clk)
+      condition     if (else) [rst]
+      from          top.u_sub.din       # 这条驱动的上游信号
+```
+
+`fanin` 顺着驱动一层层往回追，是多跳闭包。
+
+`fanout` 是 `fanin` 的反向，顺着负载往下走。
+
+```
+fanin of top.q
+4 nodes, 4 edges, 2 conditions         # 其中 2 条是条件
+
+  [1] top.u_sub.dout → top.q           # 每条边一个序号
+      depth     1                      # 距起点第几层
+      via       connection             # 经哪种弧；控制弧是门控，显黄色
+      location  sample.sv:45
+      code      sub u_sub(... .dout(q) ...);   # 该位置的源码
+
+  [2] top.u_sub.rst → top.u_sub.dout
+      depth     2
+      via       control                # 黄色，表示这是门控条件
+      location  sample.sv:13
+      code      if (rst) dout <= 8'h0;
+```
+
+末尾的 `[N ms]` 是这次查询的耗时。
+
 ## 说明
 
 工具只反映导出的内容，不做仿真判断；哪些驱动实际生效、某个值对不对，需要结合波形自己判断。
