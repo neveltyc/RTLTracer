@@ -57,7 +57,9 @@ options by command:
   --top NAME                    choose the top if several elaborated (trace + cones)
 
 SIGNAL, FROM and TO are hierarchical paths (top.u_core.q); a leading testbench
-scope is dropped. Add --json to any command for the machine-readable envelope."""
+scope is dropped. A trailing bit-select narrows fanin/fanout/path to those bits
+-- q[17] or q[7:4] by declared index, q@[17] by flattened LSB offset. Add --json
+to any command for the machine-readable envelope."""
 
 
 class _Ink:
@@ -141,6 +143,11 @@ def _human(name: str, data: dict, summary: dict) -> str:
     def field(k, v, hot=False):
         lab = (c.yellow if hot else c.dim)(f"{k:<12}")
         return f"      {lab}  {v}"
+
+    def winbits(w):   # a bit window [lo] / [lo:hi] as LSB offsets, "" for whole
+        if not w:
+            return ""
+        return f"[{w[0]}]" if w[0] == w[1] else f"[{w[0]}:{w[1]}]"
 
     if name == "info":
         a = data["analysis"]
@@ -271,10 +278,14 @@ def _human(name: str, data: dict, summary: dict) -> str:
         lines.append(c.dim(", ".join(parts)))
         for i, e in enumerate(data.get("edges", []), 1):
             lines.append("")
-            arrow = f"{c.cyan(e['source'])} {c.dim('→')} {c.cyan(e['target'])}"
+            src = e["source"] + winbits(e.get("source_window"))
+            tgt = e["target"] + winbits(e.get("target_window"))
+            arrow = f"{c.cyan(src)} {c.dim('→')} {c.cyan(tgt)}"
             lines.append(f"  {c.bold(f'[{i}]')} {arrow}")
             lines.append(field("depth", e["depth"]))
             lines.append(field("via", e["kind"], hot=e.get("control")))
+            if e.get("widened"):
+                lines.append(field("note", "precision widened: bit correspondence unavailable", hot=True))
             if e.get("ends_at_state"):
                 lines.append(field("note", "stops at a state element", hot=True))
             if e.get("file") and e.get("line"):
@@ -292,7 +303,9 @@ def _human(name: str, data: dict, summary: dict) -> str:
                 lines.append(f"    {c.dim('│ via ' + (e['kind'] or '?'))}  {loc(e)}")
                 if e.get("statement"):
                     lines.append(f"    {c.dim('│ ' + e['statement'])}")
-                lines.append(f"  {c.cyan(e['target'])}")
+                if e.get("widened"):
+                    lines.append(f"    {c.dim('│')} {c.yellow('precision widened')}")
+                lines.append(f"  {c.cyan(e['target'] + winbits(e.get('target_window')))}")
         else:
             lines.append(c.yellow("no path found"))
         lines.append("")

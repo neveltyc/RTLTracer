@@ -18,6 +18,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DB = str(REPO / "tests" / "fixtures" / "sample.db")
+BITS = str(REPO / "tests" / "fixtures" / "bits.db")   # nibble-split, for bit-level
 
 
 def run(*args: str) -> tuple[int, str, str]:
@@ -219,6 +220,64 @@ def test_fanout_depth_bounds():
     one = j("fanout", DB, "top.mode", "--depth", "1")["summary"]["nodes"]
     full = j("fanout", DB, "top.mode", "--depth", "0")["summary"]["nodes"]
     assert full >= one
+
+
+# --- bit-level (over the nibble-split fixture) -------------------------------
+
+def _leaves(d):
+    return {n["path"].split(".")[-1] for n in d["data"]["nodes"]}
+
+
+def test_fanin_bit_select_prunes():
+    # y[7:4] is b's nibble, y[3:0] is a's; a fan-in of one bit reaches one input.
+    hi = j("fanin", BITS, "bits.y[7]", "--depth", "0")
+    assert hi["data"]["granularity"] == "bit"
+    assert "b" in _leaves(hi) and "a" not in _leaves(hi)
+    lo = j("fanin", BITS, "bits.y[0]", "--depth", "0")
+    assert "a" in _leaves(lo) and "b" not in _leaves(lo)
+
+
+def test_fanin_bit_window_maps_through_chain():
+    # y[7] <- mid[7] <- b[3], carried exactly across the whole-copy and slice.
+    d = j("fanin", BITS, "bits.y[7]", "--depth", "0")["data"]
+    reached = {(e["source"].split(".")[-1], tuple(e["source_window"] or ()))
+               for e in d["edges"]}
+    assert ("b", (3, 3)) in reached
+    assert all(not e["widened"] for e in d["edges"])
+
+
+def test_fanin_whole_net_is_net_level():
+    d = j("fanin", BITS, "bits.y", "--depth", "0")
+    assert d["data"]["granularity"] == "net"
+    assert {"a", "b"} <= _leaves(d)
+
+
+def test_fanin_widens_on_arithmetic():
+    # w = a + b has no bit correspondence, so w[3] widens to whole a and b.
+    d = j("fanin", BITS, "bits.w[3]", "--depth", "0")["data"]
+    assert {"a", "b"} <= {n["path"].split(".")[-1] for n in d["nodes"]}
+    assert all(e["widened"] and e["source_window"] is None for e in d["edges"])
+
+
+def test_fanout_bit_select():
+    d = j("fanout", BITS, "bits.a[0]", "--depth", "0")["data"]
+    edges = {(e["target"].split(".")[-1], tuple(e["target_window"] or ()), e["widened"])
+             for e in d["edges"]}
+    assert ("mid", (0, 0), False) in edges     # precise forward map
+    assert ("w", (), True) in edges            # arithmetic widens
+
+
+def test_offset_syntax_matches_declared():
+    # For a [7:0] vector the declared index equals the flattened offset.
+    a = j("fanin", BITS, "bits.y[7]", "--depth", "0")
+    b = j("fanin", BITS, "bits.y@[7]", "--depth", "0")
+    assert _leaves(a) == _leaves(b) == {"b", "mid", "y"}
+
+
+def test_path_carries_bits():
+    d = j("path", BITS, "bits.a[0]", "bits.y")["data"]
+    assert d["found"] and d["granularity"] == "bit"
+    assert d["edges"][-1]["target_window"] == [0, 0]
 
 
 # --- path -------------------------------------------------------------------

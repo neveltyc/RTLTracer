@@ -11,6 +11,7 @@ from rtltracer import sql
 
 _SEPS = {".", "/"}
 _BIT_SELECT = re.compile(r"^(.*)\[(\d+)(?::(\d+))?\]$")
+_OFFSET_SELECT = re.compile(r"^(.*)@\[(\d+)(?::(\d+))?\]$")
 _RANGE = re.compile(r"\[(\d+)\s*:\s*(\d+)\]")
 
 
@@ -23,6 +24,9 @@ class ResolvedSignal:
     full_path: str
     width: int | None
     spell: str | None = None
+    # The selected bits as flattened LSB-relative offsets, closed [lo, hi];
+    # None means the whole net. This is what the cone walk carries.
+    window: tuple[int, int] | None = None
 
 
 class ResolveError(Exception):
@@ -90,12 +94,38 @@ def _offsets_of(select: tuple[int, int], decl: tuple[int, int]) -> tuple[int, in
     return (min(a, b), max(a, b))
 
 
-def split_select(path: str) -> tuple[str, tuple[int, int] | None]:
+def split_select(path: str) -> tuple[str, tuple[str, int, int] | None]:
+    """Split a trailing bit-select off a path. Returns (base, select), where
+    select is ('decl', a, b) for a declared index `sig[a:b]`, ('offset', a, b)
+    for a raw flattened offset `sig@[a:b]`, or None."""
+    m = _OFFSET_SELECT.match(path)
+    if m is not None:
+        base, a, b = m.group(1), int(m.group(2)), m.group(3)
+        return base, ("offset", a, a if b is None else int(b))
     m = _BIT_SELECT.match(path)
-    if m is None:
-        return path, None
-    base, a, b = m.group(1), int(m.group(2)), m.group(3)
-    return base, (a, a) if b is None else (a, int(b))
+    if m is not None:
+        base, a, b = m.group(1), int(m.group(2)), m.group(3)
+        return base, ("decl", a, a if b is None else int(b))
+    return path, None
+
+
+def _resolve_select(select, net) -> tuple[str | None, tuple[int, int] | None]:
+    """Turn a parsed select into (display spell, flattened window). A declared
+    index needs the net's single declared range; a raw @[..] offset does not."""
+    if select is None:
+        return None, None
+    kind, a, b = select
+    if kind == "offset":
+        spell = f"@[{a}]" if a == b else f"@[{a}:{b}]"
+        return spell, (min(a, b), max(a, b))
+    decl = _parse_declared_range(net["data_type"], net["width"])
+    if decl is None:
+        raise ResolveError("BAD_SELECT",
+                           f"{net['net_name']} has no single declared range; "
+                           f"use @[lo:hi] with flattened bit offsets")
+    window = _offsets_of((a, b), decl)   # also range-checks a and b
+    spell = f"[{a}]" if a == b else f"[{a}:{b}]"
+    return spell, window
 
 
 def _candidates(cursor, node: int, inst: int | None) -> list[str]:
@@ -233,14 +263,7 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
             below = result["below"]
             local = result["local"]
             full_path = ".".join([root_name] + below + [local])
-            spell = None
-            if select is not None:
-                decl = _parse_declared_range(net["data_type"], net["width"])
-                if decl is None:
-                    raise ResolveError("BAD_SELECT",
-                                       f"{net['net_name']} has no single declared range; trace the whole object")
-                _offsets_of(select, decl)  # rejects a select outside the range
-                spell = f"[{select[0]}]" if select[0] == select[1] else f"[{select[0]}:{select[1]}]"
+            spell, window = _resolve_select(select, net)
             return ResolvedSignal(
                 net_id=net["net_id"],
                 inst_id=net["inst_id"],
@@ -249,6 +272,7 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
                 full_path=full_path + (spell or ""),
                 width=net["width"],
                 spell=spell,
+                window=window,
             )
 
     if not reached:

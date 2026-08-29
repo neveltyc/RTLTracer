@@ -40,6 +40,19 @@ rtltracer trace design.db tb.dut.top.alu.result
 
 默认输出给人看；加 `--json` 输出结构化结果，字段即上文各命令返回的内容。
 
+## 位级追踪
+
+`fanin` / `fanout` / `path` 支持位选，只追那些 bit，用的是数据库里已有的位级依赖，不重新分析 RTL：
+
+```bash
+rtltracer fanin design.db top.data[17]     # 只追喂给 bit 17 的东西
+rtltracer path design.db top.a[3] top.y    # 从 a 的 bit 3 找路
+```
+
+位选一路按精确对应映射到对端（`data[17] ← tmp[5] ← src[5]`）；遇到算术等无法逐位对应处，精度扩大为整条 net，并在该边标 `precision widened`。
+
+位选写声明下标 `[hi:lo]`；对 struct、多维打包数组等没有单一声明范围的对象，用 `@[hi:lo]` 直接给 flattened LSB 偏移（普通 `[N:0]` 向量两者相同）。不带位选就是整条 net。
+
 ## 常用选项
 
 ```bash
