@@ -1,3 +1,6 @@
 """python -m rtltracer"""
+import sys
+
 from rtltracer.cli import main
-main()
+
+sys.exit(main())

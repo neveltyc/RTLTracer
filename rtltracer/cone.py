@@ -108,7 +108,9 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int, no_ctl: bool,
                     r["_unreachable"] = _unreachable(cursor, facts, r.get("stmt_id"))
                     edges.append(r)
                     continue
-                far = r["tgt_net_id"]
+                # The end to advance to is the one opposite the frontier net:
+                # the driver for a fan-in, the load for a fan-out.
+                far = r["src_net_id"] if direction == "driver" else r["tgt_net_id"]
                 r["_depth"] = d
                 r["ends_at_state"] = _at_state(facts, comb, through_latch, far)
                 r["_unreachable"] = _unreachable(cursor, facts, r.get("stmt_id"))
