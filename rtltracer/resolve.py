@@ -21,15 +21,8 @@ class ResolvedSignal:
     net_name: str
     node_path: str
     full_path: str
-    data_type: str | None
     width: int | None
-    window: tuple[int, int] | None = None
     spell: str | None = None
-    discarded: list[str] | None = None
-
-    @property
-    def path(self):
-        return self.full_path
 
 
 class ResolveError(Exception):
@@ -214,7 +207,6 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
 
     above = _above_the_design(cursor, root_id, root_inst, root_name, all_levels)
     reached = above is not None
-    discarded = all_levels[:above] if above is not None else []
     rest = all_levels[above:] if above is not None else all_levels
     if rest and rest[0] == root_name:
         rest = rest[1:]
@@ -233,17 +225,14 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
             net = result["net"]
             below = result["below"]
             local = result["local"]
-            parts = [root_name] + below + [local]
-            full_path = ".".join(parts)
-            window = None
+            full_path = ".".join([root_name] + below + [local])
             spell = None
             if select is not None:
                 decl = _parse_declared_range(net["data_type"], net["width"])
                 if decl is None:
                     raise ResolveError("BAD_SELECT",
                                        f"{net['net_name']} has no single declared range; trace the whole object")
-                offsets = _offsets_of(select, decl)
-                window = offsets
+                _offsets_of(select, decl)  # rejects a select outside the range
                 spell = f"[{select[0]}]" if select[0] == select[1] else f"[{select[0]}:{select[1]}]"
             return ResolvedSignal(
                 net_id=net["net_id"],
@@ -251,11 +240,8 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
                 net_name=net["net_name"],
                 node_path=".".join([root_name] + below),
                 full_path=full_path + (spell or ""),
-                data_type=net["data_type"],
                 width=net["width"],
-                window=window,
                 spell=spell,
-                discarded=discarded or None,
             )
 
     if not reached:

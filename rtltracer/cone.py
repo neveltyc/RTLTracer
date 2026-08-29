@@ -144,7 +144,6 @@ def _walk(cursor, db: Db, signal: str, direction: str, depth: int,
     if no_ctl:
         raw = [r for r in raw if r.get("dep_kind") != "control"]
     edges, nodes = _name_edges(cursor, raw, direction)
-    direct = sorted({e["source"] for e in edges if e["depth"] == 1})
     data = {
         "start": sig.full_path,
         "direction": direction,
@@ -156,16 +155,13 @@ def _walk(cursor, db: Db, signal: str, direction: str, depth: int,
         "ctl_depth": ctl_depth,
         "nodes": nodes,
         "edges": edges,
-        "direct": direct,
     }
     summary = {
         "nodes": len(nodes),
         "edges": len(edges),
-        "direct": len(direct),
         "stopped_at_state": sum(1 for e in edges if e["ends_at_state"]),
         "max_depth_reached": max((e["depth"] for e in edges), default=0),
         "control_edges": sum(1 for e in edges if e["control"]),
-        "limit": 0,
     }
     return {"data": data, "summary": summary, "diagnostics": []}
 
@@ -301,5 +297,5 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
         "nodes": nodes,
         "edges": edges,
     }
-    summary = {"found": found, "length": len(trail) - 1 if found else 0, "clocked_edges": 0}
+    summary = {"found": found, "length": len(trail) - 1 if found else 0}
     return {"data": data, "summary": summary, "diagnostics": []}

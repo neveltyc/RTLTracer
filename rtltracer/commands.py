@@ -52,7 +52,7 @@ class _Source:
             return None, "missing"
 
 
-def info(db: Db, limit: int = 0) -> dict:
+def info(db: Db) -> dict:
     cur = db.conn.cursor()
     seal = cur.execute(sql.load("info")).fetchone()
     sources = cur.execute(sql.load("info_sources")).fetchall()
@@ -94,7 +94,6 @@ def info(db: Db, limit: int = 0) -> dict:
         "schema_version": seal["schema_version"],
         "analysis_status": seal["analysis_status"],
         "sources": len(rows),
-        "shown_sources": len(rows) if limit == 0 else min(len(rows), limit),
         "sources_stale": stale,
         "sources_missing": missing,
     }
@@ -168,8 +167,7 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
     if truncated:
         hits = hits[:limit]
     data = {"pattern": pattern, "kind": kind, "hits": hits}
-    summary = {"hits": len(hits), "shown": len(hits), "truncated": truncated, "capped": truncated,
-               "outside_root": 0, "limit": limit}
+    summary = {"hits": len(hits), "shown": len(hits), "truncated": truncated, "limit": limit}
     return {"data": data, "summary": summary, "diagnostics": []}
 
 
@@ -377,6 +375,5 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         "hops": hops,
         "procedures": procedures,
     }
-    summary = {"status": status, "hops": len(hops), "structural_hops": len(structural), "drivers": 0,
-               "multiple_drivers": False}
+    summary = {"status": status, "hops": len(hops), "structural_hops": len(structural)}
     return {"data": data, "summary": summary, "diagnostics": []}

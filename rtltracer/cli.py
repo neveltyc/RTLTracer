@@ -89,8 +89,6 @@ def _human(name: str, data: dict, summary: dict) -> str:
         for s in data["sources"]:
             if s["state"] in ("stale", "missing"):
                 lines.append(f"  {s['state']}: {s['path']}")
-        if summary["shown_sources"] < summary["sources"]:
-            lines.append(f"  ({summary['shown_sources']} of {summary['sources']} listed)")
         lines.append("")
     elif name == "tree":
         for lv in data["levels"]:
@@ -115,8 +113,6 @@ def _human(name: str, data: dict, summary: dict) -> str:
     elif name == "trace":
         lines.append(f"Signal: {data['signal']}{'  ' + data.get('bits', '') if data.get('bits') else ''}  [{data['width']} bits]")
         lines.append(f"{data['direction']}s: {data['status']} ({len(data['hops'])} hop(s))")
-        if summary.get("multiple_drivers"):
-            lines.append("  ! drivers overlap")
         lines.append("")
         for h in data["hops"]:
             at = f"{h['file']}:{h['line']}" if h.get("file") and h.get("line") else ""
@@ -170,8 +166,6 @@ def _human(name: str, data: dict, summary: dict) -> str:
             note = f"  [{', '.join(marks)}]" if marks else ""
             lines.append(f"  {e['depth']:>2}  {e['source']} -> {e['target']}{note}")
             lines.append(f"      {e['kind']:<18} {at}")
-        if summary.get("cut"):
-            lines.append(f"\ntruncated: {summary['shown_edges']}/{summary['edges']} edges")
         lines.append("")
     elif name == "path":
         lines.append(f"path: {data['from']} -> {data['to']}")
@@ -203,7 +197,6 @@ def main():
     # info
     pi = sub.add_parser("info", parents=[jp], help="Database seal and source status")
     pi.add_argument("db", type=Path)
-    pi.add_argument("--limit", type=int, default=0, help="Sources to show; 0 = all")
 
     # tree
     pt = sub.add_parser("tree", parents=[jp], help="Hierarchy levels")
@@ -286,7 +279,7 @@ def main():
     try:
         _t0 = time.perf_counter()
         if cmd == "info":
-            outcome = commands.info(db, args.limit)
+            outcome = commands.info(db)
         elif cmd == "tree":
             outcome = commands.tree(db, args.scope, args.depth, args.limit)
         elif cmd == "find":

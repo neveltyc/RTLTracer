@@ -56,6 +56,8 @@ rtltracer fanin design.db top.q --ctl-depth 2  # 条件信号只追 2 层
 
 工具只反映导出的内容，不做仿真判断；哪些驱动实际生效、某个值对不对，需要结合波形自己判断。
 
+只对接当前 schema 版本（v20），不做前向兼容：库的版本对不上会直接报错，上游升级后用匹配的 `rtl-designdb` 重新导出即可。
+
 ## License
 
 MIT
