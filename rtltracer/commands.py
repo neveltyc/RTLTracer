@@ -110,9 +110,11 @@ def tree(db: Db, scope: str | None, depth: int = 3, limit: int = 0) -> dict:
         node_id, path = root["node_id"], root["node_name"]
     else:
         try:
+            # A net names a scope: the instance that declares it.
             sig = resolve(cur, scope)
+            node_id, path = sig.inst_id, sig.node_path
         except ResolveError:
-            # A scope, not a net: try the tree level itself.
+            # Not a net: try the tree level itself.
             row = cur.execute(
                 "SELECT node_id, node_path FROM v_node_path WHERE node_path = ?", (scope,)
             ).fetchone()
@@ -147,23 +149,28 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
     cur = db.conn.cursor()
     root = cur.execute(sql.load("tops")).fetchone()
     root_path = root["node_name"] if root else ""
+    # One row past the limit tells truncation from an exact fill.
+    probe = limit + 1 if limit > 0 else limit
     if kind == "net":
         rows = cur.execute(sql.load("find_net"),
-                           {"pattern": pattern, "root_path": root_path, "limit": limit}).fetchall()
+                           {"pattern": pattern, "root_path": root_path, "limit": probe}).fetchall()
         hits = [{"path": r["full_path"], "what": "net",
                  "detail": f"{r['decl_kind']} [{r['width']} bit(s)]" if r["width"] is not None else r["decl_kind"]}
                 for r in rows]
     elif kind == "instance":
         rows = cur.execute(sql.load("find_instance"),
-                           {"pattern": pattern, "root_path": root_path, "limit": limit}).fetchall()
+                           {"pattern": pattern, "root_path": root_path, "limit": probe}).fetchall()
         hits = [{"path": r["node_path"], "what": r["node_kind"], "detail": r["module_name"] or r["def_name"]}
                 for r in rows]
     else:  # module
-        rows = cur.execute(sql.load("find_module"), {"pattern": pattern, "limit": limit}).fetchall()
+        rows = cur.execute(sql.load("find_module"), {"pattern": pattern, "limit": probe}).fetchall()
         hits = [{"path": r["name"], "what": r["def_kind"], "detail": f"{r['occurrences']} occurrence(s)"}
                 for r in rows]
+    truncated = limit > 0 and len(hits) > limit
+    if truncated:
+        hits = hits[:limit]
     data = {"pattern": pattern, "kind": kind, "hits": hits}
-    summary = {"hits": len(hits), "shown": len(hits), "truncated": False, "capped": False,
+    summary = {"hits": len(hits), "shown": len(hits), "truncated": truncated, "capped": truncated,
                "outside_root": 0, "limit": limit}
     return {"data": data, "summary": summary, "diagnostics": []}
 
@@ -253,6 +260,16 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
     far_ids = set()
     raw = [dict(r) for r in rows]
 
+    # v_node_path walks the whole tree per query, so materialise it once and
+    # serve every hop's scope from the map rather than re-walking per hop.
+    node_paths: dict[int, str] = {}
+    def scope_path(node_id: int) -> str | None:
+        if not node_paths:
+            node_paths.update(
+                (r["node_id"], r["node_path"])
+                for r in cur.execute("SELECT node_id, node_path FROM v_node_path"))
+        return node_paths.get(node_id)
+
     # dep kinds (only meaningful on dataflow rows)
     dep_kind = {}
     for r in raw:
@@ -286,10 +303,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         statement, source_state = source.line(file_path, line) if file_path else (None, "missing")
         scope = sig.full_path
         if stmt_dict:
-            scope = cur.execute(
-                "SELECT node_path FROM v_node_path WHERE node_id = ?",
-                (stmt_dict["scope_node_id"],)).fetchone()
-            scope = scope["node_path"] if scope else sig.full_path
+            scope = scope_path(stmt_dict["scope_node_id"]) or sig.full_path
         gates, unreachable = _gates(cur, stmt_dict["stmt_id"] if stmt_dict else None, source)
         timing = _timing(cur, stmt_dict)
         call_chain = _call_chain(cur, stmt_dict["call_site_id"] if stmt_dict else None)

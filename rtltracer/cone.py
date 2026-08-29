@@ -85,9 +85,9 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int, no_ctl: bool,
     frontier = [(start, None, ctl_init)]
     edges = []
     no = int(no_ctl)
-    for d in range(1, depth + 1):
-        if not frontier:
-            break
+    d = 0
+    while frontier and (depth == 0 or d < depth):  # depth 0 walks to closure
+        d += 1
         nets = [net for net, _, _ in frontier]
         rows = _arcs_batch(cursor, name, nets, no)
         by_signal: dict[int, list[dict]] = {}

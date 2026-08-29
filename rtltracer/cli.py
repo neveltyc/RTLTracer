@@ -110,7 +110,7 @@ def _human(name: str, data: dict, summary: dict) -> str:
             detail = h.get("detail")
             lines.append(f"  {h['path']}{'  ' + detail if detail else ''}")
         if summary["truncated"]:
-            lines.append(f"\ntruncated: {summary['shown']}/{summary['hits']} hits")
+            lines.append(f"\ntruncated: first {summary['shown']}; raise --limit for more")
         lines.append("")
     elif name == "trace":
         lines.append(f"Signal: {data['signal']}{'  ' + data.get('bits', '') if data.get('bits') else ''}  [{data['width']} bits]")
