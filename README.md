@@ -1,98 +1,61 @@
 # RTLTracer
 
-Signal trace, driver and load analysis over an
-[rtl-designdb](https://github.com/neveltyc/RTLDebugDBKit) v20 database.
-The RTL is elaborated once by `rtl-designdb` into SQLite; this tool queries
-that file. SQL is the contract: every query lives in
-[rtltracer/sql/](rtltracer/sql/), and Python is a thin CLI that binds
-parameters, names nets, and renders the answer.
+查询 [RTLDebugDBKit](https://github.com/neveltyc/RTLDebugDBKit) 导出的设计数据库（schema v20），回答信号级问题：谁驱动它、谁读它、它依赖什么、从哪里到哪。
 
-It is not a simulator. It reports what the design is, never what it did at
-some moment.
-
-## Requires
-
-* Python 3.11+ (standard library only: `sqlite3`, `argparse`, `hashlib`)
-* A `design.db` exported by `rtl-designdb`, schema **v20**
-
-## Use
+## 安装
 
 ```bash
-python -m rtltracer info design.db
-python -m rtltracer trace design.db top.u_core.u_alu.result
-python -m rtltracer trace design.db top.u_core.status[3] --load
-python -m rtltracer fanin design.db top.u_core.status --depth 6
-python -m rtltracer fanin design.db top.u_core.status --comb
-python -m rtltracer fanout design.db top.a --depth 4
-python -m rtltracer path design.db top.a top.u_core.result
-python -m rtltracer tree design.db --depth 2
-python -m rtltracer find design.db 'req*'
+pip install -e .
 ```
 
-Add `--json` for a machine-readable envelope (`tool`, `version`, `status`,
-`command`, `data`, `diagnostics`, `errors`, `summary`). Without it the same
-data renders for a terminal.
+需要 Python 3.11+，无第三方依赖。
 
-A path may carry testbench levels above the design root. Every suffix is
-tried, longest first, so `tb.u_dut.top.a` and `top.a` name the same net and
-the answer names what was discarded.
+## 用前须知
 
-## Commands
+先用 `rtl-designdb` 把 RTL 导成一个 SQLite 文件：
 
-| Command | Question | Reads |
-|---|---|---|
-| `info` | Can this database be trusted? | `v_db_info`, source SHA-256 check |
-| `tree` | What is the design made of? | `v_tree_node`, `v_node_path`, `v_net` |
-| `find` | Where does a name live? | `v_net`, `v_tree_node`, `module` |
-| `trace` | Who drives / reads this signal? | `v_driver` / `v_load` + `v_stmt`, `v_branch`, `v_proc_event`, `v_call_site` |
-| `fanin` | Everything it depends on, transitively | recursive closure over `v_driver` |
-| `fanout` | Everything that depends on it | recursive closure over `v_load` |
-| `path` | A route between two signals | BFS over `v_load` |
-
-## Cone engines
-
-`fanin`, `fanout` and `path` accept `--engine cte|bfs`.
-
-* `cte` — the whole walk is one recursive SQL statement. Simple to read;
-  SQLite materialises the composite view once, so large cones cost more.
-* `bfs` — Python walks level by level, each level a batch point query that
-  seeks the `net_dep_*` indexes. This is what the kit's schema documentation
-  recommends for a closure that must stay index-fast.
-
-Measured on a Windows desktop against real cores in this repo's
-`.tools/` (not committed): `fanin --depth 4` on picorv32 was about 0.40 s
-with `cte` and 0.23 s with `bfs`; `fanout --depth 3` on tinyriscv was
-0.34 s vs 0.23 s. `path` on tinyriscv with `cte` did not finish in 40 s
-(trail-guarded recursion explores too many simple paths), while `bfs`
-returned the 22-hop route in well under a second, so `path` defaults to
-`bfs`.
-
-## Layout
-
-```
-rtltracer/
-  cli.py          argparse, envelope, human render
-  db.py           open + schema v20 gate
-  resolve.py      bit-select split + declared-range mapping
-  commands.py     info, tree, find, trace
-  cone.py         fanin, fanout, path (cte + bfs)
-  sql.py          SQL loader
-  sql/            the queries themselves, one file per query
+```bash
+rtl-designdb -f filelist.f --top top -o design.db
 ```
 
-## Known limits
+之后的查询都不再读 RTL，只读这个库。
 
-* Interface/modport path resolution and escaped-identifier segmentation are
-  not implemented; basic tree walk + `v_node_path` covers regular hierarchy
-  and generate blocks.
-* Bit-select `[i]` / `[hi:lo]` is accepted on the queried signal, but the
-  window is not propagated across hops; a cone narrows at the start only.
-* `--comb` stops at state elements and crosses whole-width port ties
-  (matching `rtlscanner`'s state-element propagation), but has no
-  `--through-latch`.
-* Source lines are quoted only when the file still hashes to the export;
-  otherwise `source` says `stale` or `missing` and no text is claimed.
+## 用法
 
-## Licence
+```bash
+rtltracer info design.db                  # 库是否可信、分析是否完整
+rtltracer tree design.db                  # 设计由什么组成
+rtltracer find design.db 'req*'           # 信号叫什么、在哪
+rtltracer trace design.db top.alu.result   # 谁驱动它（--load 反过来）
+rtltracer fanin design.db top.alu.result  # 它依赖什么，多层
+rtltracer fanout design.db top.clk        # 谁依赖它，多层
+rtltracer path design.db top.a top.out    # 两个信号之间有没有路
+```
+
+信号路径可以直接用波形里的写法，测试台层级会自动丢弃：
+
+```bash
+rtltracer trace design.db tb.dut.top.alu.result
+```
+
+默认输出给人看；加 `--json` 输出结构化结果，字段即上文各命令返回的内容。
+
+## 常用选项
+
+```bash
+rtltracer fanin design.db top.q --depth 6      # 走多少层（0 = 不限制）
+rtltracer fanin design.db top.q --comb         # 只看到寄存器/锁存器为止
+rtltracer fanin design.db top.q --through-latch # --comb 时允许穿过锁存器
+rtltracer trace design.db top.q --ctl          # 把条件信号也算作读取
+rtltracer fanin design.db top.q --no-ctl       # 忽略条件信号
+rtltracer fanin design.db top.q --follow-ctl   # 跟着条件信号继续追
+rtltracer fanin design.db top.q --ctl-depth 2  # 条件信号只追 2 层
+```
+
+## 说明
+
+工具只反映导出的内容，不做仿真判断；哪些驱动实际生效、某个值对不对，需要结合波形自己判断。
+
+## License
 
 MIT
