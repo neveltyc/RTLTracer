@@ -9,6 +9,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from rtltracer import sql
+from rtltracer.commands import _Source
 from rtltracer.db import Db
 from rtltracer.resolve import resolve
 
@@ -176,10 +177,13 @@ def _name_edges(cursor, raw: list[dict], direction: str):
     names = {}
     if net_ids:
         names = _name_nets(cursor, net_ids)
+    src_reader = _Source(cursor)
     edges = []
     for r in raw:
         src, tgt = r["src_net_id"], r["tgt_net_id"]
         kind = r.get("driver_kind") or r.get("load_kind")
+        file_path, line = r.get("file_path"), r.get("src_line")
+        statement = src_reader.line(file_path, line)[0] if file_path and line else None
         edges.append({
             "source": names.get(src, f"<net {src}>"),
             "target": names.get(tgt, f"<net {tgt}>"),
@@ -190,8 +194,9 @@ def _name_edges(cursor, raw: list[dict], direction: str):
             "control": r.get("dep_kind") == "control",
             "ends_at_state": r.get("ends_at_state", False),
             "unreachable": r.get("_unreachable", False),
-            "file": r.get("file_path"),
-            "line": r.get("src_line"),
+            "file": file_path,
+            "line": line,
+            "statement": statement,
         })
     depth_map = {}
     for e in edges:
@@ -281,15 +286,19 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
     if found:
         names = _name_nets(cur, trail)
         nodes = [names.get(n, f"<net {n}>") for n in trail]
+        src_reader = _Source(cur)
         for a, b in zip(trail, trail[1:]):
             r = cur.execute(sql.load("path_edge"),
                             {"signal_net_id": b, "driver_net_id": a}).fetchone()
+            file_path = r["file_path"] if r else None
+            line = r["src_line"] if r else None
             edges.append({
                 "source": names.get(a, f"<net {a}>"),
                 "target": names.get(b, f"<net {b}>"),
                 "kind": r["driver_kind"] if r else None,
-                "file": r["file_path"] if r else None,
-                "line": r["src_line"] if r else None,
+                "file": file_path,
+                "line": line,
+                "statement": src_reader.line(file_path, line)[0] if file_path and line else None,
             })
     data = {
         "from": f.full_path,

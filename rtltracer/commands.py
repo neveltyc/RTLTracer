@@ -152,7 +152,8 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
         rows = cur.execute(sql.load("find_net"),
                            {"pattern": pattern, "root_path": root_path, "limit": probe}).fetchall()
         hits = [{"path": r["full_path"], "what": "net",
-                 "detail": f"{r['decl_kind']} [{r['width']} bit(s)]" if r["width"] is not None else r["decl_kind"]}
+                 "detail": f"{r['decl_kind']}, {r['width']} bit" + ("" if r["width"] == 1 else "s")
+                           if r["width"] is not None else r["decl_kind"]}
                 for r in rows]
     elif kind == "instance":
         rows = cur.execute(sql.load("find_instance"),
@@ -161,7 +162,8 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
                 for r in rows]
     else:  # module
         rows = cur.execute(sql.load("find_module"), {"pattern": pattern, "limit": probe}).fetchall()
-        hits = [{"path": r["name"], "what": r["def_kind"], "detail": f"{r['occurrences']} occurrence(s)"}
+        hits = [{"path": r["name"], "what": r["def_kind"],
+                 "detail": f"{r['occurrences']} instance" + ("" if r["occurrences"] == 1 else "s")}
                 for r in rows]
     truncated = limit > 0 and len(hits) > limit
     if truncated:

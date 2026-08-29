@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,30 @@ from rtltracer import cone
 from rtltracer.resolve import ResolveError
 
 TOOL = "rtltracer"
+
+
+class _Ink:
+    """ANSI styling, but only for an interactive terminal (honours NO_COLOR).
+    Piped or redirected output stays plain, so JSON and greps are untouched."""
+
+    def __init__(self, stream):
+        self.on = stream.isatty() and os.environ.get("NO_COLOR") is None
+
+    def _p(self, code: str, s: str) -> str:
+        return f"\033[{code}m{s}\033[0m" if self.on else s
+
+    def bold(self, s): return self._p("1", s)
+    def dim(self, s): return self._p("2", s)
+    def red(self, s): return self._p("31", s)
+    def green(self, s): return self._p("32", s)
+    def yellow(self, s): return self._p("33", s)
+    def cyan(self, s): return self._p("36", s)
+
+    def state(self, s: str) -> str:
+        good = {"resolved", "complete", "ok", "current"}
+        warn = {"boundary_only", "partial", "hierarchy_only", "stale",
+                "no_driver_found", "no_load_found"}
+        return self.green(s) if s in good else self.yellow(s) if s in warn else self.red(s)
 
 
 def _envelope(command: str, args: dict, status: str, data: dict, summary: dict,
@@ -52,7 +77,7 @@ def _result(name: str, args: dict, outcome, json_mode: bool):
                             [{"code": outcome.code, "message": str(outcome)}])
             sys.stdout.write(out)
         else:
-            print(f"error: {outcome}", file=sys.stderr)
+            _emit_error(str(outcome))
         return 1
     data, summary, diagnostics = outcome["data"], outcome["summary"], outcome["diagnostics"]
     if json_mode:
@@ -61,68 +86,122 @@ def _result(name: str, args: dict, outcome, json_mode: bool):
         return 0
     # Human text
     sys.stdout.write(_human(name, data, summary))
-    diags = [d for d in diagnostics if d.get("severity") == "warning"]
-    for d in diags:
-        print(f"warning: {d['message']}", file=sys.stderr)
+    e = _Ink(sys.stderr)
+    for d in diagnostics:
+        if d.get("severity") == "warning":
+            print(f"{e.yellow('warning:')} {d['message']}", file=sys.stderr)
     return 0
 
 
+def _emit_error(msg: str):
+    e = _Ink(sys.stderr)
+    print(f"{e.red('error:')} {msg}", file=sys.stderr)
+
+
 def _human(name: str, data: dict, summary: dict) -> str:
+    c = _Ink(sys.stdout)
     lines = []
+
+    def loc(e, width=0):
+        s = f"{e['file']}:{e['line']}" if e.get("file") and e.get("line") else ""
+        return c.dim(f"{s:<{width}}") if width else c.dim(s)
+
+    def plur(n, word):
+        return f"{n} {word}" + ("" if n == 1 else "s")
+
+    def field(k, v, hot=False):
+        lab = (c.yellow if hot else c.dim)(f"{k:<12}")
+        return f"      {lab}  {v}"
+
     if name == "info":
-        lines.append(f"Database: {data['path']}")
         a = data["analysis"]
-        lines.append(f"Schema:   v{data['schema_version']}  ({data['producer']['tool']} {data['producer']['tool_version']})")
-        lines.append(f"Top:      {data['top'] or '(none)'}")
-        lines.append(f"Analysis: {a['status']}")
+        prod = f"{data['producer']['tool']} {data['producer']['tool_version']}"
+        lines.append(f"{c.bold('Database:')} {data['path']}")
+        lines.append(f"{c.bold('Schema:  ')} v{data['schema_version']}  {c.dim('(' + prod + ')')}")
+        lines.append(f"{c.bold('Top:     ')} {c.cyan(data['top'] or '(none)')}")
+        lines.append(f"{c.bold('Analysis:')} {c.state(a['status'])}")
         for k in ("error_count", "empty_procedure_count", "duplicate_path_count", "truncated_call_count", "unanalysed_inst_count"):
             if a[k] > 0:
-                lines.append(f"  short: {a[k]} {k.replace('_', ' ')}")
+                lines.append(c.yellow(f"  short: {a[k]} {k.replace('_', ' ')}"))
         for k in ("unresolved_count", "checker_inst_count"):
             if a[k] > 0:
-                lines.append(f"  declined: {a[k]} {k.replace('_', ' ')}")
+                lines.append(c.dim(f"  declined: {a[k]} {k.replace('_', ' ')}"))
         if a["recursion_count"] > 0:
-            lines.append(f"  truncated: {a['recursion_count']} recursive instance(s)")
-        stale = summary["sources_stale"]
-        missing = summary["sources_missing"]
-        lines.append(f"Sources:  {summary['sources']} file(s){f', {stale} stale, {missing} missing' if stale + missing > 0 else ''}")
+            lines.append(c.yellow(f"  truncated: {plur(a['recursion_count'], 'recursive instance')}"))
+        stale, missing = summary["sources_stale"], summary["sources_missing"]
+        tail = c.yellow(f", {stale} stale, {missing} missing") if stale + missing > 0 else ""
+        lines.append(f"{c.bold('Sources: ')} {plur(summary['sources'], 'file')}{tail}")
         for s in data["sources"]:
             if s["state"] in ("stale", "missing"):
-                lines.append(f"  {s['state']}: {s['path']}")
+                lines.append(f"  {c.state(s['state'])}: {s['path']}")
         lines.append("")
     elif name == "tree":
-        for lv in data["levels"]:
-            indent = "  " * lv["depth"]
-            what = lv["module"] or f"({lv['kind']})"
-            nets = f"  [{lv['nets']} net(s)]" if lv["nets"] else ""
-            lines.append(f"{indent}{lv['path'].split('.')[-1]}  {what}{nets}")
+        levels = data["levels"]
+        # A node is its parent's last child when the next line at its own depth
+        # never comes before the walk pops to a shallower one.
+        last = [True] * len(levels)
+        for i, lv in enumerate(levels):
+            d = lv["depth"]
+            for nxt in levels[i + 1:]:
+                if nxt["depth"] < d:
+                    break
+                if nxt["depth"] == d:
+                    last[i] = False
+                    break
+        last_at = {}
+        for i, lv in enumerate(levels):
+            d = lv["depth"]
+            last_at[d] = last[i]
+            if d == 0:
+                stem = ""
+            else:
+                rail = "".join("    " if last_at.get(k, True) else "│   " for k in range(1, d))
+                stem = c.dim(rail + ("└── " if last[i] else "├── "))
+            what = c.dim(lv["module"] or lv["kind"])
+            nets = c.dim("  " + plur(lv["nets"], "net")) if lv["nets"] else ""
+            lines.append(f"{stem}{c.cyan(lv['path'].split('.')[-1])}  {what}{nets}")
         if summary["truncated"]:
-            lines.append(f"\ntruncated: {summary['shown']}/{summary['levels']} levels")
+            lines.append(c.dim(f"\ntruncated: {summary['shown']}/{summary['levels']} levels"))
         if summary["depth_truncated"]:
-            lines.append(f"\nstopped at depth {data['max_depth']}")
+            lines.append(c.dim(f"\nstopped at depth {data['max_depth']}"))
         lines.append("")
     elif name == "find":
         if not data["hits"]:
-            lines.append(f"no {data['kind']} matches '{data['pattern']}'")
+            lines.append(c.dim(f"no {data['kind']} matches '{data['pattern']}'"))
         for h in data["hits"]:
             detail = h.get("detail")
-            lines.append(f"  {h['path']}{'  ' + detail if detail else ''}")
+            lines.append(f"  {c.cyan(h['path'])}{'  ' + c.dim(detail) if detail else ''}")
         if summary["truncated"]:
-            lines.append(f"\ntruncated: first {summary['shown']}; raise --limit for more")
+            lines.append(c.dim(f"\ntruncated: first {summary['shown']}; raise --limit for more"))
         lines.append("")
     elif name == "trace":
-        lines.append(f"Signal: {data['signal']}{'  ' + data.get('bits', '') if data.get('bits') else ''}  [{data['width']} bits]")
-        lines.append(f"{data['direction']}s: {data['status']} ({len(data['hops'])} hop(s))")
+        noun = "driver" if data["direction"] == "driver" else "reader"
+        n = len(data["hops"])
+        bits = f"{data['bits']} " if data.get("bits") else ""
+        lines.append(f"{c.bold('signal')} {c.cyan(data['signal'])}  {bits}{c.dim('[' + str(data['width']) + ' bits]')}")
+        count = c.bold(f"{n} {noun}" + ("" if n == 1 else "s"))
+        st = data["status"]
+        if st == "boundary_only":
+            lines.append(f"{count}{c.yellow(', only at the module boundary')}")
+        elif st in ("no_driver_found", "no_load_found"):
+            lines.append(c.yellow(f"no {noun} found"))
+        else:
+            lines.append(count)
         lines.append("")
-        for h in data["hops"]:
-            at = f"{h['file']}:{h['line']}" if h.get("file") and h.get("line") else ""
-            text = h["statement"] or f"<{h['raw_kind']}>"
-            lines.append(f"  {h['kind']:<18} {at:<22} {text}")
-            if h["source"] != "current" and h["source"] != "read":
-                lines.append(f"      source: {h['source']}")
+        for i, h in enumerate(data["hops"], 1):
+            if i > 1:
+                lines.append("")
+            text = h["statement"] or c.dim(f"<{h['raw_kind']}>")
+            lines.append(f"  {c.bold(f'[{i}]')} {text}")
+            lines.append(field("kind", h["kind"]))
+            if h.get("file") and h.get("line"):
+                lines.append(field("location", c.dim(f"{h['file']}:{h['line']}")))
+            if h["source"] not in ("current", "read"):
+                lines.append(field("source", c.yellow(h["source"])))
             if h.get("timing"):
                 ev = ", ".join(f"{e['edge']} {e['signal']}" for e in h["timing"]["events"])
-                lines.append(f"      timing: {h['timing']['proc_kind']} @({ev})" if ev else f"      timing: {h['timing']['proc_kind']}")
+                body = f"{h['timing']['proc_kind']} @({ev})" if ev else h["timing"]["proc_kind"]
+                lines.append(field("timing block", body))
             for g in h.get("gates", []):
                 info = g["kind"]
                 if g.get("sense"):
@@ -133,55 +212,62 @@ def _human(name: str, data: dict, summary: dict) -> str:
                     info += f" [{', '.join(g['reads'])}]"
                 if g.get("iteration"):
                     info += f" iter {g['iteration']}"
-                lines.append(f"      when: {info}")
+                lines.append(field("condition", info, hot=True))
             if h.get("unreachable"):
-                lines.append("      unreachable: constant condition rules this out")
+                lines.append(field("unreachable", c.red("constant condition rules this out"), hot=True))
             if h.get("call_chain"):
-                lines.append(f"      via: {' -> '.join(h['call_chain'])}")
+                lines.append(field("via", c.dim(" → ".join(h["call_chain"]))))
+            arrow = "from" if data["direction"] == "driver" else "to"
             for s in h.get("signals", []):
-                lines.append(f"      from: {s}" if data['direction'] == 'driver' else f"      to: {s}")
+                lines.append(field(arrow, c.cyan(s)))
             for s in h.get("unresolved", []):
-                lines.append(f"      {s}  (unresolved)")
+                lines.append(field("unresolved", c.cyan(s), hot=True))
         for i, p in enumerate(data.get("procedures", [])):
-            lines.append(f"\n  procedure #{i + 1} ({p['proc_kind']}) writes {len(p['writes'])} times:")
+            lines.append(c.dim(f"\n  procedure #{i + 1} ({p['proc_kind']}) writes {len(p['writes'])} times:"))
             for w in p["writes"]:
                 bits = f"   bits {w.get('bits')}" if w.get("bits") else ""
-                uncond = "   [ungated]" if w.get("unconditional") else ""
-                chain = f"   via {' -> '.join(w.get('call_chain', []))}" if w.get("call_chain") else ""
-                lines.append(f"    {w.get('line') or '':>5}  {w.get('statement') or '<assignment>'}{bits}{uncond}{chain}")
+                uncond = c.dim("   [ungated]") if w.get("unconditional") else ""
+                chain = c.dim(f"   via {' → '.join(w.get('call_chain', []))}") if w.get("call_chain") else ""
+                ln = f"{w.get('line') or '':>5}"
+                lines.append(f"    {c.dim(ln)}  {w.get('statement') or '<assignment>'}{bits}{uncond}{chain}")
         lines.append("")
     elif name in ("fanin", "fanout"):
-        lines.append(f"{name} of {data['start']}")
-        lines.append(f"{summary['nodes']} node(s), {summary['edges']} edge(s)")
+        lines.append(f"{c.bold(name)} of {c.cyan(data['start'])}")
+        parts = [plur(summary["nodes"], "node"), plur(summary["edges"], "edge")]
         if data.get("comb"):
-            lines[-1] += ", combinational"
+            parts.append("combinational")
         if summary.get("control_edges"):
-            lines[-1] += f", {summary['control_edges']} of them conditions"
-        lines.append("")
-        for e in data.get("edges", []):
-            at = f"{e['file']}:{e['line']}" if e.get("file") and e.get("line") else ""
-            marks = []
-            if e.get("control"): marks.append("condition")
-            if e.get("ends_at_state"): marks.append("stops at state")
-            note = f"  [{', '.join(marks)}]" if marks else ""
-            lines.append(f"  {e['depth']:>2}  {e['source']} -> {e['target']}{note}")
-            lines.append(f"      {e['kind']:<18} {at}")
+            parts.append(plur(summary["control_edges"], "condition"))
+        lines.append(c.dim(", ".join(parts)))
+        for i, e in enumerate(data.get("edges", []), 1):
+            lines.append("")
+            arrow = f"{c.cyan(e['source'])} {c.dim('→')} {c.cyan(e['target'])}"
+            lines.append(f"  {c.bold(f'[{i}]')} {arrow}")
+            lines.append(field("depth", e["depth"]))
+            lines.append(field("via", e["kind"], hot=e.get("control")))
+            if e.get("ends_at_state"):
+                lines.append(field("note", "stops at a state element", hot=True))
+            if e.get("file") and e.get("line"):
+                lines.append(field("location", loc(e)))
+            if e.get("statement"):
+                lines.append(field("code", e["statement"]))
         lines.append("")
     elif name == "path":
-        lines.append(f"path: {data['from']} -> {data['to']}")
+        lines.append(f"{c.bold('path')} {c.cyan(data['from'])} {c.dim('→')} {c.cyan(data['to'])}")
         if data["found"]:
-            lines.append(f"found, {data['length']} hop(s)")
+            lines.append(c.green(f"found, {plur(data['length'], 'hop')}"))
             lines.append("")
-            lines.append(f"  {data['from']}")
+            lines.append(f"  {c.cyan(data['from'])}")
             for e in data.get("edges", []):
-                at = f"{e['file']}:{e['line']}" if e.get("file") and e.get("line") else ""
-                lines.append(f"    | {e['kind']} {at}")
-                lines.append(f"  {e['target']}")
+                lines.append(f"    {c.dim('│ via ' + e['kind'])}  {loc(e)}")
+                if e.get("statement"):
+                    lines.append(f"    {c.dim('│ ' + e['statement'])}")
+                lines.append(f"  {c.cyan(e['target'])}")
         else:
-            lines.append("not found")
+            lines.append(c.yellow("no path found"))
         lines.append("")
-    lines.append(f"  [{summary.get('_ms', 0)} ms]")
-    return "\n".join(lines)
+    lines.append(c.dim(f"  [{summary.get('_ms', 0)} ms]"))
+    return "\n".join(lines) + "\n"
 
 
 def _resolve_opt(v: str | None, default=""):
@@ -269,7 +355,7 @@ def main():
             sys.stdout.write(_envelope(args.command, {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}, "error", None, None, [],
                                        [{"code": e.code, "message": e.message}]))
         else:
-            print(f"error: {e.message}", file=sys.stderr)
+            _emit_error(e.message)
         return 1
 
     cmd = args.command
@@ -313,7 +399,7 @@ def main():
             sys.stdout.write(_envelope(cmd, {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}, "error", None, None, [],
                                        [{"code": code, "message": str(e)}]))
         else:
-            print(f"error: {e}", file=sys.stderr)
+            _emit_error(str(e))
         rc = 1
 
     return rc
