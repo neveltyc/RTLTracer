@@ -288,8 +288,8 @@ def main():
     pt = sub.add_parser("tree", parents=[jp], help="Hierarchy levels")
     pt.add_argument("db", type=Path)
     pt.add_argument("scope", nargs="?", default=None, help="Start scope")
-    pt.add_argument("--depth", type=int, default=3, help="Levels shown; 0 = all")
-    pt.add_argument("--limit", type=int, default=0)
+    pt.add_argument("--depth", type=int, default=3, help="Levels deep; 0 = all")
+    pt.add_argument("--limit", type=int, default=0, help="Max levels shown; 0 = all")
 
     # find
     pf = sub.add_parser("find", parents=[jp], help="Find by name")
@@ -297,7 +297,7 @@ def main():
     pf.add_argument("pattern", help="Name glob (use * and ?)")
     pf.add_argument("--instances", action="store_true")
     pf.add_argument("--modules", action="store_true")
-    pf.add_argument("--limit", type=int, default=200)
+    pf.add_argument("--limit", type=int, default=200, help="Max hits; 0 = all")
 
     # trace
     ptr = sub.add_parser("trace", parents=[jp], help="One hop: who drives / reads a signal")

@@ -114,6 +114,13 @@ def test_find_truncation():
     assert len(d["data"]["hits"]) == 1 and d["summary"]["truncated"] is True
 
 
+def test_find_limit_zero_is_all():
+    capped = j("find", DB, "*", "--limit", "1")["data"]["hits"]
+    allh = j("find", DB, "*", "--limit", "0")
+    assert len(allh["data"]["hits"]) > len(capped)
+    assert allh["summary"]["truncated"] is False
+
+
 # --- trace ------------------------------------------------------------------
 
 def test_trace_driver_boundary():

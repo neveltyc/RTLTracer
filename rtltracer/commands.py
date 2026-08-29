@@ -146,8 +146,9 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
     cur = db.conn.cursor()
     root = cur.execute(sql.load("tops")).fetchone()
     root_path = root["node_name"] if root else ""
-    # One row past the limit tells truncation from an exact fill.
-    probe = limit + 1 if limit > 0 else limit
+    # Fetch one past the limit to tell truncation from an exact fill; limit 0
+    # means all, which SQLite's LIMIT reads as -1.
+    probe = limit + 1 if limit > 0 else -1
     if kind == "net":
         rows = cur.execute(sql.load("find_net"),
                            {"pattern": pattern, "root_path": root_path, "limit": probe}).fetchall()
