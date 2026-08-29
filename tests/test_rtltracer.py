@@ -149,6 +149,13 @@ def test_trace_top_option():
     assert j("trace", DB, "top.q", "--top", "top")["status"] == "ok"
 
 
+def test_top_option_selects_a_real_top():
+    # A --top that names no elaborated top must fail, not be ignored.
+    code, _, _ = run("trace", DB, "top.q", "--top", "not_a_top")
+    assert code == 1
+    assert j("trace", DB, "top.q", "--top", "not_a_top")["errors"][0]["code"] == "NO_TOP"
+
+
 def test_trace_bit_select():
     assert j("trace", DB, "top.q[3:0]")["data"]["bits"] == "[3:0]"
 

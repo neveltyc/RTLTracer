@@ -198,9 +198,16 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
     if not all_levels:
         raise ResolveError("SIGNAL_NOT_FOUND", f"empty path '{signal}'")
 
-    root_row = cursor.execute(sql.load("tops")).fetchone()
-    if root_row is None:
+    roots = cursor.execute(sql.load("tops")).fetchall()
+    if not roots:
         raise ResolveError("NO_TOP", "this database elaborated no top")
+    if top:
+        root_row = next((r for r in roots if r["node_name"] == top), None)
+        if root_row is None:
+            names = [r["node_name"] for r in roots]
+            raise ResolveError("NO_TOP", f"no top named '{top}'; elaborated tops: {names}")
+    else:
+        root_row = roots[0]
     root_id, root_name = root_row["node_id"], root_row["node_name"]
     root = cursor.execute(sql.load("node_by_id"), {"node_id": root_id}).fetchone()
     root_inst = root["inst_id"] if root else None
