@@ -10,10 +10,10 @@ pip install -e .
 
 需要 Python 3.11+，无第三方依赖。
 
-等价的单文件版本在 [`dist-merged-py`](https://github.com/neveltyc/RTLTracer/tree/dist-merged-py) 分支的 `rtltracer-v22.py`：
+等价的单文件版本在 [`dist-bundle`](https://github.com/neveltyc/RTLTracer/tree/dist-bundle) 分支的 `rtltracer-v22.py`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/neveltyc/RTLTracer/dist-merged-py/rtltracer-v22.py -o rtltracer.py
+curl -fsSL https://raw.githubusercontent.com/neveltyc/RTLTracer/dist-bundle/rtltracer-v22.py -o rtltracer.py
 ```
 
 ## 用前须知

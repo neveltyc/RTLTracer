@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build the single-file bundle and publish it to the dist-merged-py branch as
+# Build the single-file bundle and publish it to the dist-bundle branch as
 # rtltracer-v<schema>.py. One branch, one file per schema version; existing
 # files are carried forward. Usage: scripts/publish-bundle.sh [remote]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 remote="${1:-origin}"
-branch="dist-merged-py"
+branch="dist-bundle"
 
 python3 scripts/bundle.py
 schema=$(python3 -c "from rtltracer.db import SCHEMA_VERSION; print(SCHEMA_VERSION)")
