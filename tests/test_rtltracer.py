@@ -21,6 +21,7 @@ DB = str(REPO / "tests" / "fixtures" / "sample.db")
 BITS = str(REPO / "tests" / "fixtures" / "bits.db")   # nibble-split, for bit-level
 SAMEPAIR = str(REPO / "tests" / "fixtures" / "samepair.db")  # one net pair, two slice edges
 EXPRCONN = str(REPO / "tests" / "fixtures" / "exprconn.db")  # connection_expression tie
+DEADCODE = str(REPO / "tests" / "fixtures" / "deadcode.db")  # constant-false branch arm
 
 
 def run(*args: str) -> tuple[int, str, str]:
@@ -287,6 +288,26 @@ def test_fanin_follow_ctl_and_ctl_depth():
     base = j("fanin", DB, "top.q", "--depth", "0")["summary"]["nodes"]
     assert j("fanin", DB, "top.q", "--depth", "0", "--follow-ctl")["summary"]["nodes"] >= base
     assert j("fanin", DB, "top.q", "--depth", "0", "--ctl-depth", "1")["summary"]["nodes"] >= base
+
+
+# --- dead branches ----------------------------------------------------------
+
+def test_fanin_marks_dead_branch_unreachable():
+    # `if (USE_B) y = b;` with USE_B constantly 0: the b -> y arc is in the
+    # design but gated by a statically-dead branch. The gating branch lives on
+    # the statement, not on the edge, so the arc must still be marked
+    # unreachable; the live `y = a` arc must not.
+    edges = {e["source"]: e["unreachable"]
+             for e in j("fanin", DEADCODE, "deadcode.y", "--depth", "0")["data"]["edges"]}
+    assert edges["deadcode.b"] is True
+    assert edges["deadcode.a"] is False
+
+
+def test_path_prunes_dead_branch():
+    # b reaches y only through the dead arm, so no path exists; a reaches y
+    # through the live arm.
+    assert j("path", DEADCODE, "deadcode.b", "deadcode.y")["data"]["found"] is False
+    assert j("path", DEADCODE, "deadcode.a", "deadcode.y")["data"]["found"] is True
 
 
 # --- fanout -----------------------------------------------------------------

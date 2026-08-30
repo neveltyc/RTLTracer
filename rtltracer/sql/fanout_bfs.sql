@@ -8,7 +8,7 @@ SELECT d.edge_source,
        d.src_lo AS near_lo, d.src_hi AS near_hi,
        d.dst_lo AS far_lo, d.dst_hi AS far_hi,
        d.map_kind, d.edge_kind,
-       d.dep_id, d.stmt_id, d.branch_id,
+       d.dep_id, d.stmt_id,
        d.call_site_id,
        d.file_path, d.src_line
 FROM v_trace_edge d

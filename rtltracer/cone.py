@@ -22,7 +22,7 @@ FOLLOW_ALL = -1
 class Facts:
     clocked: set[int] = None
     latch: set[int] = None
-    dead: set[int] = None
+    dead: set[int] = None            # stmt_ids under a statically-dead branch
     call_parent: dict = None
     body_local: set[int] = None
 
@@ -32,7 +32,7 @@ def load_facts(cursor) -> Facts:
     state_rows = cursor.execute(sql.load("state_elements")).fetchall()
     f.clocked = {r["net_id"] for r in state_rows if r["kind"] == "clocked"}
     f.latch = {r["net_id"] for r in state_rows if r["kind"] == "latch"}
-    f.dead = {r["branch_id"] for r in cursor.execute(sql.load("dead_branches"))}
+    f.dead = {r["stmt_id"] for r in cursor.execute(sql.load("dead_stmts"))}
     f.call_parent = {r["call_site_id"]: r["parent_call_site_id"]
                      for r in cursor.execute(sql.load("call_parents"))}
     f.body_local = {r["net_id"] for r in cursor.execute(sql.load("body_local"))}
@@ -99,7 +99,7 @@ def _advance(facts: Facts, row: dict, ctx: int | None, ctl_left: int,
                                row["map_kind"])
         if far_window is SKIP:
             return None
-    unreachable = row["branch_id"] in facts.dead
+    unreachable = row["stmt_id"] in facts.dead
     far_net = row["far_net_id"]
     ends_at_state = far_net in stop_nets
     if unreachable or ends_at_state:
