@@ -222,26 +222,19 @@ def test_trace_bad_select():
     assert j("trace", DB, "top.q[99]")["errors"][0]["code"] == "BAD_SELECT"
 
 
-def test_trace_map_kind_requires_all_exactness_flags():
-    from rtltracer.commands import _trace_map_kind
-    # v_driver/v_load carry three independent exactness flags; map_exact=1
-    # alone does not license a bit-to-bit offset mapping. The helper repeats
-    # the producer derivation instead of reusing the flag name.
-    row = {"signal_exact": 1, "driver_exact": 0, "map_exact": 1,
-           "signal_lo": 0, "signal_hi": 7, "driver_lo": 0, "driver_hi": 7}
-    assert _trace_map_kind(row, load=False) == "inexact"
-    row["driver_exact"] = 1
-    assert _trace_map_kind(row, load=False) == "exact"
-    row["signal_exact"] = 0
-    assert _trace_map_kind(row, load=False) == "inexact"
-    row["signal_exact"] = 1
-    row["map_exact"] = 0
-    assert _trace_map_kind(row, load=False) == "inexact"
-    row["map_exact"] = 1
-    row["driver_hi"] = 3
-    assert _trace_map_kind(row, load=False) == "inexact"
-    del row["driver_lo"]
-    assert _trace_map_kind(row, load=False) == "inexact"
+def test_trace_keeps_bit_across_whole_net_exact_arc():
+    # `assign y = mid;` is a whole-net exact copy (signal_lo/driver_lo NULL).
+    # Tracing y[3] must carry the bit to mid[3], exactly as fanin does across
+    # the same arc; trace must not widen to the whole net. Regression guard for
+    # the map_kind derivation dropping the whole-to-whole exact case.
+    hops = j("trace", BITS, "bits.y[3]")["data"]["hops"]
+    assert len(hops) == 1
+    hop = hops[0]
+    assert hop["signals"] == ["bits.mid"]
+    assert hop["far_windows"] == {"bits.mid": [[3, 3]]}
+    assert hop.get("widened_far", []) == []
+
+
 def test_trace_testbench_prefix_discarded():
     assert j("trace", DB, "tb.dut.top.q")["data"]["signal"] == "top.q"
 

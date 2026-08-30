@@ -154,26 +154,6 @@ def find(db: Db, pattern: str, kind: str = "net", limit: int = 200) -> dict:
     return {"data": data, "summary": summary, "diagnostics": []}
 
 
-def _trace_map_kind(row: dict, load: bool) -> str:
-    """Translate v_driver/v_load fact exactness into the propagation
-    contract of v_trace_edge. The producer view derives map_kind from
-    endpoint exactness, concrete ranges and equal widths; trace reads the
-    base facts directly and repeats that derivation at this boundary only."""
-    near_exact = row.get("signal_exact")
-    far_exact = row.get("load_exact") if load else row.get("driver_exact")
-    map_exact = row.get("map_exact")
-    if near_exact != 1 or far_exact != 1 or map_exact != 1:
-        return "inexact"
-    near_lo, near_hi = row.get("signal_lo"), row.get("signal_hi")
-    far_lo = row.get("load_lo") if load else row.get("driver_lo")
-    far_hi = row.get("load_hi") if load else row.get("driver_hi")
-    if near_lo is None or near_hi is None or far_lo is None or far_hi is None:
-        return "inexact"
-    if (near_hi - near_lo) != (far_hi - far_lo):
-        return "inexact"
-    return "exact"
-
-
 def _provenance(row: dict, index: int, dep_kind: str | None) -> str:
     role = ":control" if dep_kind == "control" else ""
     if row.get("stmt_id") is not None:

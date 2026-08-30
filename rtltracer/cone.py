@@ -277,7 +277,9 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                 step = _advance(facts, r, ctx, ctl_left, window, stop_nets)
                 if step is None:
                     continue
-                far_net, far_window, nctx, nctl, widened, _ = step
+                far_net, far_window, nctx, nctl, widened, unreachable = step
+                if unreachable:
+                    continue          # a path never routes through dead code
                 key = (far_net, nctx, nctl, far_window)
                 if key in visited:
                     continue

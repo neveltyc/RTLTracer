@@ -6,10 +6,16 @@ SELECT v.signal_net_id AS net_id,
        v.driver_net_id AS far_net_id,
        v.driver_ref AS far_ref,
        v.driver_lo AS far_lo, v.driver_hi AS far_hi,
+       -- Mirror v_trace_edge's map_kind: an exact correspondence is either
+       -- two concrete ranges of equal width, or a whole-net-to-whole-net tie
+       -- (both bounds NULL) which is offset-preserving. The producer view
+       -- normalizes whole exact nets to [0,width-1]; propagate handles the
+       -- NULL/NULL case directly, so both stay bit-precise.
        CASE WHEN v.signal_exact = 1 AND v.driver_exact = 1 AND v.map_exact = 1
-                 AND v.signal_lo IS NOT NULL AND v.signal_hi IS NOT NULL
-                 AND v.driver_lo IS NOT NULL AND v.driver_hi IS NOT NULL
-                 AND v.signal_hi - v.signal_lo = v.driver_hi - v.driver_lo
+                 AND ((v.signal_lo IS NOT NULL AND v.signal_hi IS NOT NULL
+                       AND v.driver_lo IS NOT NULL AND v.driver_hi IS NOT NULL
+                       AND v.signal_hi - v.signal_lo = v.driver_hi - v.driver_lo)
+                   OR (v.signal_lo IS NULL AND v.driver_lo IS NULL))
             THEN 'exact' ELSE 'inexact' END AS map_kind,
        v.driver_kind AS kind,
        d.dep_kind AS dep_kind,
