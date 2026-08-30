@@ -292,7 +292,7 @@ def _path_bfs(cursor, facts: Facts, from_id: int, to_id: int, max_depth: int,
     travels forward, pruning arcs it does not feed. Returns the trail as a list
     of (net_id, window) pairs, or None."""
     if from_id == to_id:
-        return [(from_id, from_window)]
+        return [(from_id, from_window, None)]
     ctl_init = 0 if not follow_ctl and ctl_depth is None else (ctl_depth if ctl_depth is not None else -1)
     start = (from_id, None, ctl_init, from_window)
     visited = {start}
@@ -338,13 +338,18 @@ def _path_bfs(cursor, facts: Facts, from_id: int, to_id: int, max_depth: int,
                 if key in visited:
                     continue
                 visited.add(key)
-                parents[key] = (net, ctx, ctl_left, window)
+                parents[key] = ((net, ctx, ctl_left, window), dict(r))
                 if far == to_id:
                     trail = []
                     at = key
                     while at is not None:
-                        trail.append((at[0], at[3]))
-                        at = parents.get(at)
+                        entry = parents.get(at)
+                        if entry is None:
+                            trail.append((at[0], at[3], None))
+                            break
+                        parent_state, edge = entry
+                        trail.append((at[0], at[3], edge))
+                        at = parent_state
                     return trail[::-1]
                 next_frontier.append(key)
         frontier = next_frontier
@@ -365,22 +370,21 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
     edges = []
     nodes = []
     if found:
-        net_seq = [n for n, _ in trail]
+        net_seq = [n for n, _, _ in trail]
         names = _name_nets(cur, net_seq)
         nodes = [names.get(n, f"<net {n}>") for n in net_seq]
         src_reader = Source(cur)
-        for (a, a_win), (b, b_win) in zip(trail, trail[1:]):
-            r = cur.execute(sql.load("path_edge"),
-                            {"signal_net_id": b, "driver_net_id": a}).fetchone()
-            file_path = r["file_path"] if r else None
-            line = r["src_line"] if r else None
+        for (a, a_win, _), (b, b_win, edge) in zip(trail, trail[1:]):
+            file_path = edge.get("file_path") if edge else None
+            line = edge.get("src_line") if edge else None
+            kind = edge.get("driver_kind") or edge.get("load_kind") if edge else None
             edges.append({
                 "source": names.get(a, f"<net {a}>"),
                 "target": names.get(b, f"<net {b}>"),
                 "source_window": list(a_win) if a_win else None,
                 "target_window": list(b_win) if b_win else None,
                 "widened": a_win is not None and b_win is None,
-                "kind": r["driver_kind"] if r else None,
+                "kind": kind,
                 "file": file_path,
                 "line": line,
                 "statement": src_reader.line(file_path, line)[0] if file_path and line else None,

@@ -19,6 +19,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 DB = str(REPO / "tests" / "fixtures" / "sample.db")
 BITS = str(REPO / "tests" / "fixtures" / "bits.db")   # nibble-split, for bit-level
+SAMEPAIR = str(REPO / "tests" / "fixtures" / "samepair.db")  # one net pair, two slice edges
 
 
 def run(*args: str) -> tuple[int, str, str]:
@@ -322,11 +323,31 @@ def test_path_carries_bits():
     assert d["edges"][-1]["target_window"] == [0, 0]
 
 
+def test_path_uses_the_edge_bfs_actually_walked():
+    # y[3:0]=a[3:0] and y[7:4]=a[7:4] share the same net pair.  The backtrace
+    # must use the slice edge the walk followed for a[7], not guess with a
+    # LIMIT 1 lookup that could return the low-nibble assignment.
+    d = j("path", SAMEPAIR, "samepair.a[7]", "samepair.y")["data"]
+    assert d["found"]
+    assert len(d["edges"]) == 1
+    e = d["edges"][0]
+    assert e["source_window"] == [7, 7]
+    assert e["target_window"] == [7, 7]
+    assert e["line"] == 10
+    assert "a[7:4]" in (e["statement"] or "")
+
+
 # --- path -------------------------------------------------------------------
 
 def test_path_found():
     d = j("path", DB, "top.a", "top.q")["data"]
     assert d["found"] is True and d["length"] == 4
+
+
+def test_path_same_net():
+    d = j("path", DB, "top.a", "top.a")["data"]
+    assert d["found"] is True and d["length"] == 0
+    assert d["nodes"] == ["top.a"]
 
 
 def test_path_not_found():
