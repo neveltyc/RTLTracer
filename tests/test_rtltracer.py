@@ -171,7 +171,7 @@ def test_trace_bit_select_maps_driver_window():
     assert len(d["hops"]) == 1
     hop = d["hops"][0]
     assert hop["signals"] == ["bits.b"]
-    assert hop["far_windows"] == {"bits.b": [3, 3]}
+    assert hop["far_windows"] == {"bits.b": [[3, 3]]}
     assert hop["widened_far"] == []
 
 
@@ -199,7 +199,7 @@ def test_trace_bit_select_load_maps_window():
     assert d["direction"] == "load"
     assert d["granularity"] == "bit"
     by_sig = {s: h for h in d["hops"] for s in h["signals"]}
-    assert by_sig["bits.mid"]["far_windows"]["bits.mid"] == [0, 0]
+    assert by_sig["bits.mid"]["far_windows"]["bits.mid"] == [[0, 0]]
     assert by_sig["bits.w"]["far_windows"]["bits.w"] is None
     assert "bits.w" in by_sig["bits.w"]["widened_far"]
 
@@ -387,7 +387,7 @@ def test_path_uses_the_edge_bfs_actually_walked():
     assert e["source_window"] == [7, 7]
     assert e["target_window"] == [7, 7]
     assert e["line"] == 10
-    assert "a[7:4]" in (e["statement"] or "")
+    assert e["statement"] is None or "a[7:4]" in e["statement"]
 
 
 # --- path -------------------------------------------------------------------
@@ -440,6 +440,87 @@ def test_json_envelope_shape():
 def test_unknown_signal_exits_one():
     code, _, err = run("trace", DB, "top.does_not_exist")
     assert code == 1 and "error" in err.lower()
+
+
+# --- regression: path --comb direction consistency ---
+
+def test_path_comb_target_bit_matches_forward():
+    whole = j("path", DB, "top.a", "top.q", "--comb")["data"]
+    bit = j("path", DB, "top.a", "top.q[0]", "--comb")["data"]
+    assert whole["found"] is False
+    assert bit["found"] is False
+
+
+def test_path_reverse_widened_flag():
+    d = j("path", BITS, "bits.a", "bits.w[3]")["data"]
+    assert d["found"] is True
+    assert d["edges"][0]["widened"] is True
+
+
+# --- regression: source-state candidate fallback + stale not quoted ---
+
+def test_source_state_falls_back_across_candidates():
+    import hashlib
+    from rtltracer.source import source_state
+    with tempfile.TemporaryDirectory() as tmp:
+        stale = Path(tmp) / "stale.sv"
+        good = Path(tmp) / "good.sv"
+        stale.write_text("old content", encoding="utf-8")
+        good.write_text("new content", encoding="utf-8")
+        digest = hashlib.sha256(good.read_bytes()).hexdigest()
+        db = Path(tmp) / "src.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE file(id INTEGER PRIMARY KEY, path TEXT, src_file_id INTEGER)")
+        con.execute("CREATE TABLE src_file(id INTEGER PRIMARY KEY, path TEXT, digest TEXT)")
+        con.execute("INSERT INTO src_file VALUES (1, ?, ?)", (str(stale), digest))
+        con.execute("INSERT INTO file VALUES (1, ?, 1)", (str(good),))
+        con.commit()
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+        assert source_state(cur, str(good))[2] == "current"
+        con.close()
+
+
+def test_source_stale_not_quoted():
+    import hashlib
+    from rtltracer.source import Source, source_state
+    with tempfile.TemporaryDirectory() as tmp:
+        src = Path(tmp) / "src.sv"
+        src.write_text("line1\nline2\n", encoding="utf-8")
+        wrong_digest = "0" * 64
+        db = Path(tmp) / "src.db"
+        con = sqlite3.connect(db)
+        con.execute("CREATE TABLE file(id INTEGER PRIMARY KEY, path TEXT, src_file_id INTEGER)")
+        con.execute("CREATE TABLE src_file(id INTEGER PRIMARY KEY, path TEXT, digest TEXT)")
+        con.execute("INSERT INTO src_file VALUES (1, ?, ?)", (str(src), wrong_digest))
+        con.execute("INSERT INTO file VALUES (1, ?, 1)", (str(src),))
+        con.commit()
+        con.row_factory = sqlite3.Row
+        cur = con.cursor()
+        assert source_state(cur, str(src))[2] == "stale"
+        assert Source(cur).line(str(src), 1) == (None, "stale")
+        con.close()
+
+
+def test_trace_far_windows_merge_intervals():
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "merge.db"
+        shutil.copyfile(SAMEPAIR, db)
+        con = sqlite3.connect(db)
+        con.execute("UPDATE net_dep SET stmt_id=1, src_lo=6, src_hi=7, tgt_lo=6, tgt_hi=7 WHERE id=2")
+        con.commit()
+        con.close()
+        d = j("trace", str(db), "samepair.y@[0:7]")["data"]
+        assert len(d["hops"]) == 1
+        fw = d["hops"][0]["far_windows"]
+        assert fw.get("samepair.a") == [[0, 3], [6, 7]]
+
+
+def test_offset_select_out_of_range():
+    code, _, _ = run("trace", BITS, "bits.y@[99]")
+    assert code == 1
+    assert j("trace", BITS, "bits.y@[99]")["errors"][0]["code"] == "BAD_SELECT"
 
 
 def _run_standalone() -> int:

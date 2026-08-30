@@ -117,7 +117,12 @@ def _resolve_select(select, net) -> tuple[str | None, tuple[int, int] | None]:
     kind, a, b = select
     if kind == "offset":
         spell = f"@[{a}]" if a == b else f"@[{a}:{b}]"
-        return spell, (min(a, b), max(a, b))
+        lo, hi = min(a, b), max(a, b)
+        width = net["width"]
+        if width is not None and (lo < 0 or hi >= width):
+            raise ResolveError("BAD_SELECT",
+                               f"offset @[{a}:{b}] outside width {width}")
+        return spell, (lo, hi)
     decl = _parse_declared_range(net["data_type"], net["width"])
     if decl is None:
         raise ResolveError("BAD_SELECT",

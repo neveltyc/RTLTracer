@@ -24,6 +24,9 @@ def source_state(cursor, file_path: str) -> tuple[str, str, str | None]:
         return file_path, "", "missing"
     src = row["src_path"]
     digest = row["sha256"]
+    # Try every candidate before giving up: an earlier path may exist but
+    # hold stale bytes, while a later one still matches the recorded digest.
+    stale_cand = None
     for cand in _candidate_paths(src, file_path):
         try:
             data = Path(cand).read_bytes()
@@ -31,7 +34,10 @@ def source_state(cursor, file_path: str) -> tuple[str, str, str | None]:
             continue
         if hashlib.sha256(data).hexdigest() == digest:
             return cand, digest, "current"
-        return cand, digest, "stale"
+        if stale_cand is None:
+            stale_cand = cand
+    if stale_cand is not None:
+        return stale_cand, digest, "stale"
     return src, digest, "missing"
 
 
@@ -48,9 +54,10 @@ class Source:
         if file_path not in self._state:
             self._state[file_path] = source_state(self.cursor, file_path)
         src, _digest, state = self._state[file_path]
-        if state == "missing" or line is None:
+        # Only quote source that still matches the DB digest.  Stale bytes
+        # would not be the statement the dependency was recorded against.
+        if state != "current" or line is None:
             return None, state
-        # stale files are still quoted for display; callers surface the state.
         lines = self._read(file_path, src)
         if lines is None:
             return None, "missing"

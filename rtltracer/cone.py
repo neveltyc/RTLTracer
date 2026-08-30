@@ -309,6 +309,11 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
     list of (net_id, window, edge) from start to goal, or None."""
     if _goal_matches(start_id, start_window, goal_id, goal_window):
         return [(start_id, start_window, None)], False
+    # Reverse search starts at the target.  If the target is a state element
+    # and --comb is active, prune it now so the semantics match the forward
+    # direction (which would never *enter* this state on the way to the goal).
+    if direction == "reverse" and comb and _at_state(facts, comb, through_latch, start_id):
+        return None, False
     bfs_name = "fanout_bfs" if direction == "forward" else "fanin_bfs"
     near = "src_net_id" if direction == "forward" else "tgt_net_id"
     far_field = "tgt_net_id" if direction == "forward" else "src_net_id"
@@ -334,6 +339,7 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                 is_control = r.get("dep_kind") == "control"
                 if is_control and ctl_left == 0 and ctl_depth is None and not follow_ctl:
                     continue
+                widened = False
                 if is_control:
                     nxt = None
                 else:
@@ -343,6 +349,7 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                                       r.get("map_exact"))
                     if nxt is SKIP:
                         continue
+                    widened = window is not None and nxt is None
                 far = r[far_field]
                 if _unreachable(cursor, facts, r.get("stmt_id")):
                     continue
@@ -358,7 +365,9 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                 if key in visited:
                     continue
                 visited.add(key)
-                parents[key] = ((net, ctx, ctl_left, window), dict(r))
+                row_copy = dict(r)
+                row_copy["_widened"] = widened
+                parents[key] = ((net, ctx, ctl_left, window), row_copy)
                 if _goal_matches(far, nxt, goal_id, goal_window):
                     trail = []
                     at = key
@@ -422,7 +431,7 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
                 "target": names.get(edge["tgt_net_id"], f"<net {edge['tgt_net_id']}>") if edge else names.get(b, f"<net {b}>"),
                 "source_window": list(a_win) if a_win else None,
                 "target_window": list(b_win) if b_win else None,
-                "widened": a_win is not None and b_win is None,
+                "widened": bool(edge.get("_widened")) if edge else False,
                 "kind": kind,
                 "file": file_path,
                 "line": line,

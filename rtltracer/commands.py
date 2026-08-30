@@ -17,6 +17,17 @@ def _names(cursor, net_ids) -> dict[int, str]:
     return {r["net_id"]: r["full_path"] for r in cursor.execute(text, values)}
 
 
+def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping or adjacent [lo, hi] intervals into a canonical set."""
+    out: list[tuple[int, int]] = []
+    for lo, hi in sorted(intervals):
+        if out and lo <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
 def _plural(n: int, word: str) -> str:
     return f"{n} {word}" + ("" if n == 1 else "s")
 
@@ -289,9 +300,10 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
             if far_net is not None:
                 existing["signals"].add(far_net)
                 if bit_mode:
-                    existing["_far_windows"][far_net] = far_window
                     if far_widened:
                         existing["_widened_far"].add(far_net)
+                    elif far_window is not None:
+                        existing["_far_windows"].setdefault(far_net, []).append(far_window)
             elif far_ref:
                 existing["unresolved"].add(far_ref)
             continue
@@ -360,9 +372,10 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         if far_net is not None:
             hop["signals"].add(far_net)
             if bit_mode:
-                hop["_far_windows"][far_net] = far_window
                 if far_widened:
                     hop["_widened_far"].add(far_net)
+                elif far_window is not None:
+                    hop["_far_windows"].setdefault(far_net, []).append(far_window)
         elif far_ref:
             hop["unresolved"].add(far_ref)
         hops.append(hop)
@@ -372,10 +385,14 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         h["signals"] = sorted(names.get(n, f"<net {n}>") for n in h["signals"])
         h["unresolved"] = sorted(h["unresolved"])
         if bit_mode:
-            h["far_windows"] = {
-                names.get(n, f"<net {n}>"): (list(w) if w else None)
-                for n, w in h["_far_windows"].items()
-            }
+            h["far_windows"] = {}
+            for n, w in h["_far_windows"].items():
+                name = names.get(n, f"<net {n}>")
+                h["far_windows"][name] = (
+                    None if n in h["_widened_far"] else
+                    [[lo, hi] for lo, hi in _merge_intervals(w)])
+            for n in h["_widened_far"]:
+                h["far_windows"].setdefault(names.get(n, f"<net {n}>"), None)
             h["widened_far"] = sorted(
                 names.get(n, f"<net {n}>") for n in h["_widened_far"])
             h.pop("_far_windows", None)

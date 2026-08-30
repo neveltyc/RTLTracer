@@ -147,7 +147,9 @@ def _human(name: str, data: dict, summary: dict) -> str:
     def winbits(w):   # a bit window [lo] / [lo:hi] as LSB offsets, "" for whole
         if not w:
             return ""
-        return f"[{w[0]}]" if w[0] == w[1] else f"[{w[0]}:{w[1]}]"
+        if isinstance(w[0], list):   # interval list: [[lo, hi], ...]
+            return "".join(winbits(x) for x in w)
+        return f"[{w[0]}]" if w[0] == w[1] else f"[{w[0]}:{w[1]}]" 
 
     if name == "info":
         a = data["analysis"]
