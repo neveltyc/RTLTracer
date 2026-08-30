@@ -390,6 +390,33 @@ def test_path_uses_the_edge_bfs_actually_walked():
     assert e["statement"] is None or "a[7:4]" in e["statement"]
 
 
+def test_path_comb_state_as_source_consistent():
+    """A state element as source must be reachable in reverse --comb too,
+    mirroring forward where the walk simply starts at the flop output."""
+    from rtltracer.cone import Facts, _path_bfs
+    con = sqlite3.connect(BITS)
+    con.row_factory = sqlite3.Row
+    cur = con.cursor()
+    facts = Facts(clocked={1}, latch=set(), dead=set(),
+                  call_parent={}, body_local=set(), stmt_branch={})
+    # bits.a (net 1) treated as a flop output driving mid -> y combinationally.
+    fwd, _ = _path_bfs(cur, facts, 1, 3, None, None, "forward", comb=True)
+    rev, _ = _path_bfs(cur, facts, 3, 1, (0, 0), None, "reverse", comb=True)
+    assert fwd is not None
+    assert rev is not None
+
+
+def test_path_range_to_range_narrows_to_overlap():
+    d = j("path", BITS, "bits.a[0]", "bits.y[3:0]")["data"]
+    assert d["found"] is True
+    # Reverse-derived window at the source is a[3:0]; the user only asked for
+    # a[0], so every reported window must be narrowed to the overlap.
+    assert d["edges"][0]["source_window"] == [0, 0]
+    assert d["edges"][-1]["target_window"] == [0, 0]
+    assert all(e["source_window"] == [0, 0] for e in d["edges"])
+    assert all(e["target_window"] == [0, 0] for e in d["edges"])
+
+
 # --- path -------------------------------------------------------------------
 
 def test_path_found():

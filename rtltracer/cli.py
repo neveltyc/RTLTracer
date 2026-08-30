@@ -148,8 +148,13 @@ def _human(name: str, data: dict, summary: dict) -> str:
         if not w:
             return ""
         if isinstance(w[0], list):   # interval list: [[lo, hi], ...]
-            return "".join(winbits(x) for x in w)
-        return f"[{w[0]}]" if w[0] == w[1] else f"[{w[0]}:{w[1]}]" 
+            parts = []
+            for lo, hi in w:
+                parts.append(f"{lo}:{hi}" if lo != hi else f"{lo}")
+            return "@{" + ",".join(parts) + "}"
+        # Internal windows are LSB-relative flattened offsets, so render them
+        # with the @[..] spelling rather than a declared-index [..] select.
+        return f"@[{w[0]}]" if w[0] == w[1] else f"@[{w[0]}:{w[1]}]"
 
     if name == "info":
         a = data["analysis"]

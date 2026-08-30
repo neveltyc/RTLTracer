@@ -14,4 +14,4 @@ SELECT d.signal_net_id AS src_net_id,
 FROM v_load d
 WHERE d.signal_net_id IN ({nets})
   AND d.load_net_id IS NOT NULL
-  AND (:no_ctl = 0 OR COALESCE((SELECT dd.dep_kind FROM net_dep dd WHERE dd.id = d.dep_id), '') <> 'control')
+  AND (? = 0 OR COALESCE((SELECT dd.dep_kind FROM net_dep dd WHERE dd.id = d.dep_id), '') <> 'control')

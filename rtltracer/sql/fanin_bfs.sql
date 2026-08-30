@@ -14,4 +14,4 @@ SELECT d.driver_net_id AS src_net_id,
 FROM v_driver d
 WHERE d.signal_net_id IN ({nets})
   AND d.driver_net_id IS NOT NULL
-  AND (:no_ctl = 0 OR d.driver_kind <> 'control')
+  AND (? = 0 OR d.driver_kind <> 'control')

@@ -295,6 +295,42 @@ def _goal_matches(net_id: int, window: tuple[int, int] | None,
     return max(window[0], goal_window[0]) <= min(window[1], goal_window[1])
 
 
+def _narrow_trail(trail: list, source_window: tuple[int, int] | None,
+                  reverse: bool) -> list:
+    """Clip a found path to the source's bit constraint.  Reverse BFS
+    returns the target range's image at the source; intersect it with the
+    user's source window, then re-propagate forward so every hop reports
+    only the bits that actually cross."""
+    if source_window is None or not trail or trail[0][1] is None:
+        return trail
+    lo = max(trail[0][1][0], source_window[0])
+    hi = min(trail[0][1][1], source_window[1])
+    if lo > hi:
+        return trail
+    win = (lo, hi)
+    out = [(trail[0][0], win, trail[0][2])]
+    for net, _old_win, edge in trail[1:]:
+        if edge is None:
+            nxt = None
+        elif reverse:
+            # fanin row: cur = target side, other = source side
+            nxt = propagate(win,
+                            edge.get("other_lo"), edge.get("other_hi"), edge.get("other_exact"),
+                            edge.get("cur_lo"), edge.get("cur_hi"), edge.get("cur_exact"),
+                            edge.get("map_exact"))
+        else:
+            # fanout row: cur = source side, other = target side
+            nxt = propagate(win,
+                            edge.get("cur_lo"), edge.get("cur_hi"), edge.get("cur_exact"),
+                            edge.get("other_lo"), edge.get("other_hi"), edge.get("other_exact"),
+                            edge.get("map_exact"))
+        if nxt is SKIP or nxt is None:
+            return trail
+        win = nxt
+        out.append((net, win, edge))
+    return out
+
+
 def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
               start_window: tuple[int, int] | None,
               goal_window: tuple[int, int] | None,
@@ -353,8 +389,6 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                 far = r[far_field]
                 if _unreachable(cursor, facts, r.get("stmt_id")):
                     continue
-                if _at_state(facts, comb, through_latch, far):
-                    continue
                 nctx = _next_ctx(facts, r, ctx, far)
                 nctl = ctl_left
                 if is_control and ctl_left >= 0:
@@ -368,6 +402,10 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                 row_copy = dict(r)
                 row_copy["_widened"] = widened
                 parents[key] = ((net, ctx, ctl_left, window), row_copy)
+                is_goal = far == goal_id
+                # Forward cannot enter a state (including a state target) .
+                if direction == "forward" and _at_state(facts, comb, through_latch, far):
+                    continue
                 if _goal_matches(far, nxt, goal_id, goal_window):
                     trail = []
                     at = key
@@ -382,7 +420,11 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                     return trail[::-1], False
                 if goal_window is not None and far == goal_id and nxt is None:
                     precision_lost = True
-                    continue            # whole at the goal cannot recover precision
+                    continue
+                # Reverse: source reached without exact match, or a state
+                # that is not the source goal, is the end of the walk.
+                if direction == "reverse" and (is_goal or _at_state(facts, comb, through_latch, far)):
+                    continue
                 next_frontier.append(key)
         frontier = next_frontier
         steps += 1
@@ -415,6 +457,10 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
             net, win, _ = trail[i]
             trail[i] = (net, win, trail[i - 1][2])
         trail[0] = (trail[0][0], trail[0][1], None)
+        # Both endpoints carry bit constraints: intersect the reverse-derived
+        # source window with the user's source select and re-propagate forward.
+        if f.window is not None:
+            trail = _narrow_trail(trail, f.window, reverse=True)
     edges = []
     nodes = []
     if found:
