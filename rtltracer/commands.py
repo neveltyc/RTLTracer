@@ -3,29 +3,10 @@ the renderer turns into terminal text or JSON; SQL stays in rtltracer/sql/."""
 from __future__ import annotations
 
 from rtltracer import sql
-from rtltracer.bits import SKIP, propagate
-from rtltracer.db import Db
+from rtltracer.bits import SKIP, merge_intervals, propagate
+from rtltracer.db import Db, net_names
 from rtltracer.resolve import ResolveError, resolve
 from rtltracer.source import Source, source_state
-
-
-def _names(cursor, net_ids) -> dict[int, str]:
-    ids = sorted(set(net_ids))
-    if not ids:
-        return {}
-    text, values = sql.fill("net_names", ids)
-    return {r["net_id"]: r["full_path"] for r in cursor.execute(text, values)}
-
-
-def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Merge overlapping or adjacent [lo, hi] intervals into a canonical set."""
-    out: list[tuple[int, int]] = []
-    for lo, hi in sorted(intervals):
-        if out and lo <= out[-1][1] + 1:
-            out[-1] = (out[-1][0], max(out[-1][1], hi))
-        else:
-            out.append((lo, hi))
-    return out
 
 
 def _plural(n: int, word: str) -> str:
@@ -227,6 +208,20 @@ def _call_chain(cur, call_site_id: int | None) -> list[str]:
     return chain
 
 
+def _attach_far(hop: dict, far_net, far_ref, bit_mode: bool, far_widened: bool, far_window):
+    """Record one arc's far end on its hop: the driven/read net (carrying its
+    bit window, or marked widened, in bit mode), else an unresolved reference."""
+    if far_net is not None:
+        hop["signals"].add(far_net)
+        if bit_mode:
+            if far_widened:
+                hop["_widened_far"].add(far_net)
+            elif far_window is not None:
+                hop["_far_windows"].setdefault(far_net, []).append(far_window)
+    elif far_ref:
+        hop["unresolved"].add(far_ref)
+
+
 def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str = "") -> dict:
     cur = db.conn.cursor()
     sig = resolve(cur, signal, top)
@@ -286,15 +281,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
             far_window, far_widened = None, False
 
         if existing is not None:
-            if far_net is not None:
-                existing["signals"].add(far_net)
-                if bit_mode:
-                    if far_widened:
-                        existing["_widened_far"].add(far_net)
-                    elif far_window is not None:
-                        existing["_far_windows"].setdefault(far_net, []).append(far_window)
-            elif far_ref:
-                existing["unresolved"].add(far_ref)
+            _attach_far(existing, far_net, far_ref, bit_mode, far_widened, far_window)
             continue
 
         stmt_dict = None
@@ -362,18 +349,10 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         if bit_mode:
             hop["_far_windows"] = {}
             hop["_widened_far"] = set()
-        if far_net is not None:
-            hop["signals"].add(far_net)
-            if bit_mode:
-                if far_widened:
-                    hop["_widened_far"].add(far_net)
-                elif far_window is not None:
-                    hop["_far_windows"].setdefault(far_net, []).append(far_window)
-        elif far_ref:
-            hop["unresolved"].add(far_ref)
+        _attach_far(hop, far_net, far_ref, bit_mode, far_widened, far_window)
         hops.append(hop)
 
-    names = _names(cur, far_ids)
+    names = net_names(cur, far_ids)
     for h in hops:
         h["signals"] = sorted(names.get(n, f"<net {n}>") for n in h["signals"])
         h["unresolved"] = sorted(h["unresolved"])
@@ -383,7 +362,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
                 name = names.get(n, f"<net {n}>")
                 h["far_windows"][name] = (
                     None if n in h["_widened_far"] else
-                    [[lo, hi] for lo, hi in _merge_intervals(w)])
+                    [[lo, hi] for lo, hi in merge_intervals(w)])
             for n in h["_widened_far"]:
                 h["far_windows"].setdefault(names.get(n, f"<net {n}>"), None)
             h["widened_far"] = sorted(
