@@ -48,7 +48,6 @@ rtltracer trace design.db tb.dut.top.alu.result
 
 ## 位级追踪
 
-`fanin` / `fanout` / `path` 支持位选，只追那些 bit，用的是数据库里已有的位级依赖，不重新分析 RTL：
 `trace` / `fanin` / `fanout` / `path` 支持位选，只追那些 bit，用的是数据库里已有的位级依赖，不重新分析 RTL：
 
 ```bash
