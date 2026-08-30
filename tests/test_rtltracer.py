@@ -323,6 +323,59 @@ def test_path_carries_bits():
     assert d["edges"][-1]["target_window"] == [0, 0]
 
 
+def test_path_bit_to_bit_exact():
+    d = j("path", BITS, "bits.a[0]", "bits.y[0]")["data"]
+    assert d["found"] is True
+    assert d["from_window"] == [0, 0]
+    assert d["to_window"] == [0, 0]
+    assert d["granularity"] == "bit"
+
+
+def test_path_bit_to_wrong_bit_not_found():
+    d = j("path", BITS, "bits.a[0]", "bits.y[7]")["data"]
+    assert d["found"] is False
+    assert d.get("reason") is None
+
+
+def test_path_net_to_bit():
+    d = j("path", BITS, "bits.a", "bits.y[0]")["data"]
+    assert d["found"] is True
+    assert d["from_window"] is None
+    assert d["to_window"] == [0, 0]
+    assert d["edges"][0]["source_window"] == [0, 0]
+
+
+def test_path_bit_precision_lost_on_arithmetic():
+    d = j("path", BITS, "bits.a[3]", "bits.w[3]")["data"]
+    assert d["found"] is False
+    assert d["reason"] == "bit_precision_lost"
+
+
+def test_path_net_to_arithmetic_bit_succeeds():
+    d = j("path", BITS, "bits.a", "bits.w[3]")["data"]
+    assert d["found"] is True
+    assert d["from_window"] is None
+    assert d["to_window"] == [3, 3]
+
+
+def test_path_same_net_bit_zero_length():
+    same = j("path", BITS, "bits.a[3]", "bits.a[3]")["data"]
+    assert same["found"] is True and same["length"] == 0
+    diff = j("path", BITS, "bits.a[3]", "bits.a[7]")["data"]
+    assert diff["found"] is False and diff["length"] == 0
+
+
+def test_path_reverse_keeps_traversed_slice_edge():
+    d = j("path", SAMEPAIR, "samepair.a[7]", "samepair.y[7]")["data"]
+    assert d["found"] is True
+    assert len(d["edges"]) == 1
+    e = d["edges"][0]
+    assert e["source_window"] == [7, 7]
+    assert e["target_window"] == [7, 7]
+    assert e["line"] == 10
+    assert e["kind"] == "data"
+
+
 def test_path_uses_the_edge_bfs_actually_walked():
     # y[3:0]=a[3:0] and y[7:4]=a[7:4] share the same net pair.  The backtrace
     # must use the slice edge the walk followed for a[7], not guess with a

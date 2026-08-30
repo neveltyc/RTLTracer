@@ -305,7 +305,12 @@ def _human(name: str, data: dict, summary: dict) -> str:
         if data["found"]:
             lines.append(c.green(f"found, {plur(data['length'], 'hop')}"))
             lines.append("")
-            lines.append(f"  {c.cyan(data['from'])}")
+            start_label = data['from']
+            if data.get("granularity") == "bit" and data.get("edges"):
+                w = data["edges"][0].get("source_window")
+                if w:
+                    start_label = data["edges"][0]["source"] + winbits(w)
+            lines.append(f"  {c.cyan(start_label)}")
             for e in data.get("edges", []):
                 lines.append(f"    {c.dim('│ via ' + (e['kind'] or '?'))}  {loc(e)}")
                 if e.get("statement"):
@@ -314,7 +319,11 @@ def _human(name: str, data: dict, summary: dict) -> str:
                     lines.append(f"    {c.dim('│')} {c.yellow('precision widened')}")
                 lines.append(f"  {c.cyan(e['target'] + winbits(e.get('target_window')))}")
         else:
-            lines.append(c.yellow("no path found"))
+            if data.get("reason") == "bit_precision_lost":
+                lines.append(c.yellow("No exact bit path found."))
+                lines.append(c.dim("Source net was reached, but bit correspondence was lost along the path."))
+            else:
+                lines.append(c.yellow("no path found"))
         lines.append("")
     lines.append(c.dim(f"  [{summary.get('_ms', 0)} ms]"))
     return "\n".join(lines) + "\n"

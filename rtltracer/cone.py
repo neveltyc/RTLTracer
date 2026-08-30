@@ -284,28 +284,48 @@ def _name_nets(cursor, net_ids) -> dict[int, str]:
     return {r["net_id"]: r["full_path"] for r in cursor.execute(text, values)}
 
 
-def _path_bfs(cursor, facts: Facts, from_id: int, to_id: int, max_depth: int,
-              no_ctl: bool, comb: bool, through_latch: bool,
-              follow_ctl: bool, ctl_depth: int | None,
-              from_window: tuple[int, int] | None):
-    """Shortest path via BFS, same pruning as the cone walk. The start window
-    travels forward, pruning arcs it does not feed. Returns the trail as a list
-    of (net_id, window) pairs, or None."""
-    if from_id == to_id:
-        return [(from_id, from_window, None)]
+def _goal_matches(net_id: int, window: tuple[int, int] | None,
+                  goal_id: int, goal_window: tuple[int, int] | None) -> bool:
+    if net_id != goal_id:
+        return False
+    if goal_window is None:
+        return True
+    if window is None:
+        return False
+    return max(window[0], goal_window[0]) <= min(window[1], goal_window[1])
+
+
+def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
+              start_window: tuple[int, int] | None,
+              goal_window: tuple[int, int] | None,
+              direction: str, max_depth: int = 0,
+              no_ctl: bool = False, comb: bool = False,
+              through_latch: bool = False, follow_ctl: bool = False,
+              ctl_depth: int | None = None):
+    """Shortest path via BFS, same pruning as the cone walk. `direction` is
+    "forward" (fanout from the start net) or "reverse" (fanin from the start
+    net); the SQL views already normalize cur/other windows, so propagation
+    is direction-agnostic. Returns (trail, precision_lost) where trail is a
+    list of (net_id, window, edge) from start to goal, or None."""
+    if _goal_matches(start_id, start_window, goal_id, goal_window):
+        return [(start_id, start_window, None)], False
+    bfs_name = "fanout_bfs" if direction == "forward" else "fanin_bfs"
+    near = "src_net_id" if direction == "forward" else "tgt_net_id"
+    far_field = "tgt_net_id" if direction == "forward" else "src_net_id"
     ctl_init = 0 if not follow_ctl and ctl_depth is None else (ctl_depth if ctl_depth is not None else -1)
-    start = (from_id, None, ctl_init, from_window)
+    start = (start_id, None, ctl_init, start_window)
     visited = {start}
     parents: dict = {}
     frontier = [start]
     no = int(no_ctl)
+    precision_lost = False
     steps = 0
     while frontier and (max_depth == 0 or steps < max_depth):
         nets = [n for n, _, _, _ in frontier]
-        rows = _arcs_batch(cursor, "fanout_bfs", nets, no)
+        rows = _arcs_batch(cursor, bfs_name, nets, no)
         by_signal: dict[int, list[dict]] = {}
         for r in rows:
-            by_signal.setdefault(r["src_net_id"], []).append(r)
+            by_signal.setdefault(r[near], []).append(r)
         next_frontier = []
         for net, ctx, ctl_left, window in frontier:
             for r in by_signal.get(net, []):
@@ -323,7 +343,7 @@ def _path_bfs(cursor, facts: Facts, from_id: int, to_id: int, max_depth: int,
                                       r.get("map_exact"))
                     if nxt is SKIP:
                         continue
-                far = r["tgt_net_id"]
+                far = r[far_field]
                 if _unreachable(cursor, facts, r.get("stmt_id")):
                     continue
                 if _at_state(facts, comb, through_latch, far):
@@ -339,7 +359,7 @@ def _path_bfs(cursor, facts: Facts, from_id: int, to_id: int, max_depth: int,
                     continue
                 visited.add(key)
                 parents[key] = ((net, ctx, ctl_left, window), dict(r))
-                if far == to_id:
+                if _goal_matches(far, nxt, goal_id, goal_window):
                     trail = []
                     at = key
                     while at is not None:
@@ -350,11 +370,14 @@ def _path_bfs(cursor, facts: Facts, from_id: int, to_id: int, max_depth: int,
                         parent_state, edge = entry
                         trail.append((at[0], at[3], edge))
                         at = parent_state
-                    return trail[::-1]
+                    return trail[::-1], False
+                if goal_window is not None and far == goal_id and nxt is None:
+                    precision_lost = True
+                    continue            # whole at the goal cannot recover precision
                 next_frontier.append(key)
         frontier = next_frontier
         steps += 1
-    return None
+    return None, precision_lost
 
 
 def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
@@ -364,9 +387,25 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
     f = resolve(cur, from_sig, top)
     t = resolve(cur, to_sig, top)
     facts = load_facts(cur)
-    trail = _path_bfs(cur, facts, f.net_id, t.net_id, max_depth,
-                      no_ctl, comb, through_latch, follow_ctl, ctl_depth, f.window)
+    reverse = t.window is not None
+    if reverse:
+        trail, precision_lost = _path_bfs(
+            cur, facts, t.net_id, f.net_id, t.window, f.window, "reverse",
+            max_depth, no_ctl, comb, through_latch, follow_ctl, ctl_depth)
+    else:
+        trail, precision_lost = _path_bfs(
+            cur, facts, f.net_id, t.net_id, f.window, t.window, "forward",
+            max_depth, no_ctl, comb, through_latch, follow_ctl, ctl_depth)
     found = trail is not None
+    if found and reverse:
+        trail = trail[::-1]
+        # Each state carried the edge from its search-order parent.  After
+        # reversing to source -> target, move each edge onto the state that
+        # owns its source side, so the downstream renderer stays direction-agnostic.
+        for i in range(len(trail) - 1, 0, -1):
+            net, win, _ = trail[i]
+            trail[i] = (net, win, trail[i - 1][2])
+        trail[0] = (trail[0][0], trail[0][1], None)
     edges = []
     nodes = []
     if found:
@@ -377,10 +416,10 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
         for (a, a_win, _), (b, b_win, edge) in zip(trail, trail[1:]):
             file_path = edge.get("file_path") if edge else None
             line = edge.get("src_line") if edge else None
-            kind = edge.get("driver_kind") or edge.get("load_kind") if edge else None
+            kind = (edge.get("driver_kind") or edge.get("load_kind")) if edge else None
             edges.append({
-                "source": names.get(a, f"<net {a}>"),
-                "target": names.get(b, f"<net {b}>"),
+                "source": names.get(edge["src_net_id"], f"<net {edge['src_net_id']}>") if edge else names.get(a, f"<net {a}>"),
+                "target": names.get(edge["tgt_net_id"], f"<net {edge['tgt_net_id']}>") if edge else names.get(b, f"<net {b}>"),
                 "source_window": list(a_win) if a_win else None,
                 "target_window": list(b_win) if b_win else None,
                 "widened": a_win is not None and b_win is None,
@@ -389,14 +428,20 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
                 "line": line,
                 "statement": src_reader.line(file_path, line)[0] if file_path and line else None,
             })
+    reason = "bit_precision_lost" if precision_lost and not found else None
     data = {
         "from": f.full_path,
         "to": t.full_path,
-        "granularity": "bit" if f.window else "net",
+        "from_window": list(f.window) if f.window else None,
+        "to_window": list(t.window) if t.window else None,
+        "granularity": "bit" if (f.window is not None or t.window is not None) else "net",
         "found": found,
+        "reason": reason,
         "length": len(trail) - 1 if found else 0,
         "nodes": nodes,
         "edges": edges,
     }
     summary = {"found": found, "length": len(trail) - 1 if found else 0}
+    if reason:
+        summary["reason"] = reason
     return {"data": data, "summary": summary, "diagnostics": []}

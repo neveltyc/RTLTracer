@@ -8,6 +8,14 @@ from pathlib import Path
 from rtltracer import sql
 
 
+def _candidate_paths(src: str, file_path: str) -> list[str]:
+    """Paths to try when quoting source, in priority order. The recorded
+    src_path is machine-specific; file_path is portable, and normalizing its
+    separators also covers fixtures built on the other platform."""
+    normalized = file_path.replace("\\", "/")
+    return list(dict.fromkeys([src, file_path, normalized]))
+
+
 def source_state(cursor, file_path: str) -> tuple[str, str, str | None]:
     """(src_path, sha256, state), where state is 'current'/'stale'/'missing'.
     Reads the file once to hash it against the recorded digest."""
@@ -16,13 +24,15 @@ def source_state(cursor, file_path: str) -> tuple[str, str, str | None]:
         return file_path, "", "missing"
     src = row["src_path"]
     digest = row["sha256"]
-    try:
-        data = Path(src).read_bytes()
-    except OSError:
-        return src, digest, "missing"
-    if hashlib.sha256(data).hexdigest() == digest:
-        return src, digest, "current"
-    return src, digest, "stale"
+    for cand in _candidate_paths(src, file_path):
+        try:
+            data = Path(cand).read_bytes()
+        except OSError:
+            continue
+        if hashlib.sha256(data).hexdigest() == digest:
+            return cand, digest, "current"
+        return cand, digest, "stale"
+    return src, digest, "missing"
 
 
 class Source:
@@ -38,8 +48,9 @@ class Source:
         if file_path not in self._state:
             self._state[file_path] = source_state(self.cursor, file_path)
         src, _digest, state = self._state[file_path]
-        if state != "current" or line is None:
+        if state == "missing" or line is None:
             return None, state
+        # stale files are still quoted for display; callers surface the state.
         lines = self._read(file_path, src)
         if lines is None:
             return None, "missing"
@@ -47,9 +58,13 @@ class Source:
 
     def _read(self, file_path: str, src: str) -> list[str] | None:
         if file_path not in self._lines:
-            try:
-                self._lines[file_path] = Path(src).read_text(
-                    encoding="utf-8", errors="replace").splitlines()
-            except OSError:
-                self._lines[file_path] = None
+            lines = None
+            for cand in _candidate_paths(src, file_path):
+                try:
+                    lines = Path(cand).read_text(
+                        encoding="utf-8", errors="replace").splitlines()
+                    break
+                except OSError:
+                    continue
+            self._lines[file_path] = lines
         return self._lines[file_path]
