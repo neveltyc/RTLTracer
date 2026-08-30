@@ -25,7 +25,7 @@ from pathlib import Path
 from rtltracer import __version__
 from rtltracer.db import DbError, open_db
 from rtltracer.commands import info, tree, find, trace
-from rtltracer.cone import walk, path
+from rtltracer.cone import cone_walk, cone_path
 from rtltracer.resolve import ResolveError
 
 TOOL = "rtltracer"
@@ -247,16 +247,16 @@ def _human(name: str, data: dict, summary: dict) -> str:
                 body = f"{h['timing']['proc_kind']} @({ev})" if ev else h["timing"]["proc_kind"]
                 lines.append(field("timing block", body))
             for g in h.get("gates", []):
-                info = g["kind"]
+                cond = g["kind"]
                 if g.get("sense"):
-                    info += f" ({g['sense']})"
+                    cond += f" ({g['sense']})"
                 if g.get("labels"):
-                    info += f" = {g['labels']}"
+                    cond += f" = {g['labels']}"
                 if g.get("reads"):
-                    info += f" [{', '.join(g['reads'])}]"
+                    cond += f" [{', '.join(g['reads'])}]"
                 if g.get("iteration"):
-                    info += f" iter {g['iteration']}"
-                lines.append(field("condition", info, hot=True))
+                    cond += f" iter {g['iteration']}"
+                lines.append(field("condition", cond, hot=True))
             if h.get("unreachable"):
                 lines.append(field("unreachable", c.red("constant condition rules this out"), hot=True))
             if h.get("call_chain"):
@@ -444,17 +444,17 @@ def main():
         elif cmd == "trace":
             outcome = trace(db, args.signal, args.load, args.ctl, top)
         elif cmd == "fanin":
-            outcome = walk(db.conn.cursor(), db, args.signal, "driver",
-                           args.depth, args.no_ctl, args.comb, args.through_latch,
-                           args.follow_ctl, args.ctl_depth, top)
+            outcome = cone_walk(db.conn.cursor(), db, args.signal, "driver",
+                                args.depth, args.no_ctl, args.comb, args.through_latch,
+                                args.follow_ctl, args.ctl_depth, top)
         elif cmd == "fanout":
-            outcome = walk(db.conn.cursor(), db, args.signal, "load",
-                           args.depth, args.no_ctl, args.comb, args.through_latch,
-                           args.follow_ctl, args.ctl_depth, top)
+            outcome = cone_walk(db.conn.cursor(), db, args.signal, "load",
+                                args.depth, args.no_ctl, args.comb, args.through_latch,
+                                args.follow_ctl, args.ctl_depth, top)
         elif cmd == "path":
-            outcome = path(db, args.from_signal, args.to_signal,
-                           args.depth, args.no_ctl, args.comb, args.through_latch,
-                           args.follow_ctl, args.ctl_depth, top)
+            outcome = cone_path(db, args.from_signal, args.to_signal,
+                                args.depth, args.no_ctl, args.comb, args.through_latch,
+                                args.follow_ctl, args.ctl_depth, top)
         else:
             raise DbError("BAD_COMMAND", f"unknown command: {cmd}")
         outcome["summary"]["_ms"] = int((time.perf_counter() - _t0) * 1000)

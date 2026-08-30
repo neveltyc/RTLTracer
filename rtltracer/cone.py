@@ -152,9 +152,9 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int,
     return edges
 
 
-def walk(cursor, db: Db, signal: str, direction: str, depth: int,
-         no_ctl: bool, comb: bool, through_latch: bool,
-         follow_ctl: bool, ctl_depth: int | None, top: str) -> dict:
+def cone_walk(cursor, db: Db, signal: str, direction: str, depth: int,
+              no_ctl: bool, comb: bool, through_latch: bool,
+              follow_ctl: bool, ctl_depth: int | None, top: str) -> dict:
     sig = resolve(cursor, signal, top)
     facts = load_facts(cursor)
     bfs_name = "fanin_bfs" if direction == "driver" else "fanout_bfs"
@@ -316,8 +316,8 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
     return None, precision_lost
 
 
-def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
-         no_ctl: bool = False, comb: bool = False, through_latch: bool = False,
+def cone_path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
+              no_ctl: bool = False, comb: bool = False, through_latch: bool = False,
          follow_ctl: bool = False, ctl_depth: int | None = None, top: str = "") -> dict:
     cur = db.conn.cursor()
     f = resolve(cur, from_sig, top)

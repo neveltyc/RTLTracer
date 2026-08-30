@@ -94,7 +94,7 @@ def _offsets_of(select: tuple[int, int], decl: tuple[int, int]) -> tuple[int, in
     return (min(a, b), max(a, b))
 
 
-def split_select(path: str) -> tuple[str, tuple[str, int, int] | None]:
+def _split_select(path: str) -> tuple[str, tuple[str, int, int] | None]:
     """Split a trailing bit-select off a path. Returns (base, select), where
     select is ('decl', a, b) for a declared index `sig[a:b]`, ('offset', a, b)
     for a raw flattened offset `sig@[a:b]`, or None."""
@@ -228,7 +228,7 @@ def _diagnose(cursor, root: int, inst: int | None, levels: list[str]) -> dict:
 
 
 def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
-    base_path, select = split_select(signal)
+    base_path, select = _split_select(signal)
     all_levels = _levels_of(base_path)
     if not all_levels:
         raise ResolveError("SIGNAL_NOT_FOUND", f"empty path '{signal}'")

@@ -52,7 +52,7 @@ def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out
 
 
-def subtract(window: tuple[int, int], covered: list[tuple[int, int]]) -> list[tuple[int, int]]:
+def _subtract(window: tuple[int, int], covered: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Parts of `window` not already covered (covered is sorted and merged)."""
     lo, hi = window
     parts, cur = [], lo
@@ -81,7 +81,7 @@ def uncovered(covered: dict, key, window: tuple[int, int] | None) -> list:
         covered[key] = "WHOLE"
         return [None]
     intervals = cur or []
-    parts = subtract(window, intervals)
+    parts = _subtract(window, intervals)
     if not parts:
         return []
     covered[key] = merge_intervals(intervals + [window])
