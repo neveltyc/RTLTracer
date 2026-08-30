@@ -1,4 +1,4 @@
-"""RTLTracer — thin CLI over SQL queries against an RTLDebugDBKit v21 database.
+"""RTLTracer — signal trace, cone and path analysis over an RTLDebugDBKit v21 database.
 
 Usage:  rtltracer <command> <db> [args] [--json]
 

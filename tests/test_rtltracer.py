@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parent.parent
 DB = str(REPO / "tests" / "fixtures" / "sample.db")
 BITS = str(REPO / "tests" / "fixtures" / "bits.db")   # nibble-split, for bit-level
 SAMEPAIR = str(REPO / "tests" / "fixtures" / "samepair.db")  # one net pair, two slice edges
+EXPRCONN = str(REPO / "tests" / "fixtures" / "exprconn.db")  # connection_expression tie
 
 
 def run(*args: str) -> tuple[int, str, str]:
@@ -221,6 +222,26 @@ def test_trace_bad_select():
     assert j("trace", DB, "top.q[99]")["errors"][0]["code"] == "BAD_SELECT"
 
 
+def test_trace_map_kind_requires_all_exactness_flags():
+    from rtltracer.commands import _trace_map_kind
+    # v_driver/v_load carry three independent exactness flags; map_exact=1
+    # alone does not license a bit-to-bit offset mapping. The helper repeats
+    # the producer derivation instead of reusing the flag name.
+    row = {"signal_exact": 1, "driver_exact": 0, "map_exact": 1,
+           "signal_lo": 0, "signal_hi": 7, "driver_lo": 0, "driver_hi": 7}
+    assert _trace_map_kind(row, load=False) == "inexact"
+    row["driver_exact"] = 1
+    assert _trace_map_kind(row, load=False) == "exact"
+    row["signal_exact"] = 0
+    assert _trace_map_kind(row, load=False) == "inexact"
+    row["signal_exact"] = 1
+    row["map_exact"] = 0
+    assert _trace_map_kind(row, load=False) == "inexact"
+    row["map_exact"] = 1
+    row["driver_hi"] = 3
+    assert _trace_map_kind(row, load=False) == "inexact"
+    del row["driver_lo"]
+    assert _trace_map_kind(row, load=False) == "inexact"
 def test_trace_testbench_prefix_discarded():
     assert j("trace", DB, "tb.dut.top.q")["data"]["signal"] == "top.q"
 
@@ -387,6 +408,40 @@ def test_path_reverse_keeps_traversed_slice_edge():
     assert e["kind"] == "data"
 
 
+def test_path_crosses_connection_expression_and_widens():
+    # child u(.in(a & b)): the boundary edge is a connection_expression, so a
+    # bit query crosses it but must widen to the whole child input instead of
+    # claiming a bit-to-bit correspondence.
+    d = j("path", EXPRCONN, "exprconn.a[0]", "exprconn.y")["data"]
+    assert d["found"] is True
+    first, second, third = d["edges"]
+    assert first["kind"] == "connection_expression"
+    assert first["source_window"] == [0, 0]
+    assert first["target_window"] is None
+    assert first["widened"] is True
+    assert second["source_window"] is None
+    assert third["target_window"] is None
+
+
+def test_path_bit_through_connection_expression_is_not_fabricated():
+    # Reverse search maps y[0] back to out[0] and in[0], but the expression
+    # tie is inexact, so the source image widens to whole a: no bit-to-bit
+    # correspondence may be claimed across it.
+    d = j("path", EXPRCONN, "exprconn.a[0]", "exprconn.y[0]")["data"]
+    assert d["found"] is False
+    assert d["reason"] == "bit_precision_lost"
+
+
+def test_fanin_crosses_connection_boundary():
+    # Both operands feed the expression tie; the fanin must reach them through
+    # the conn_arc boundary edges and report them as traversed boundary edges.
+    d = j("fanin", EXPRCONN, "exprconn.y", "--depth", "0")["data"]
+    names = {n["path"] for n in d["nodes"]}
+    assert {"exprconn.a", "exprconn.b"} <= names
+    boundary = [(e["source"], e["kind"]) for e in d["edges"] if e["boundary"]]
+    assert ("exprconn.u.out", "connection") in boundary
+    assert ("exprconn.a", "connection_expression") in boundary
+    assert ("exprconn.b", "connection_expression") in boundary
 def test_path_uses_the_edge_bfs_actually_walked():
     # y[3:0]=a[3:0] and y[7:4]=a[7:4] share the same net pair.  The backtrace
     # must use the slice edge the walk followed for a[7], not guess with a
