@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from rtltracer import sql
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 @dataclass

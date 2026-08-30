@@ -40,7 +40,7 @@ def j(*args: str) -> dict:
 def test_info():
     d = j("info", DB)
     assert d["status"] == "ok"
-    assert d["data"]["schema_version"] == 20
+    assert d["data"]["schema_version"] == 21
     assert d["data"]["analysis"]["status"] == "complete"
     assert d["summary"]["sources"] >= 1
 

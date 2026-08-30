@@ -248,31 +248,21 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
                               for r in cur.execute(sql.load("node_paths")))
         return node_paths.get(node_id)
 
-    # dep kinds (only meaningful on dataflow rows)
-    dep_kind = {}
-    for r in raw:
-        if r.get("dep_id") is not None:
-            d = cur.execute(sql.load("trace_depkind"), {"dep_id": r["dep_id"]}).fetchone()
-            dep_kind[r["dep_id"]] = d["dep_kind"] if d else None
-
     # Bit mode: carry the requested window across each arc. SKIP rows feed
     # other bits (filtered out); None widens the far end to the whole net.
     bit_mode = sig.window is not None
     arc_result: dict[int, object] = {}
     if bit_mode:
         for i, row in enumerate(raw):
-            dk = dep_kind.get(row.get("dep_id"))
-            if dk == "control":                       # a condition is not bit-mappable
+            dk = row.get("driver_kind") if not load else row.get("load_kind")
+            if dk == "control":
                 arc_result[i] = None
                 continue
-            if not load:
-                other_lo, other_hi, other_ex = row.get("driver_lo"), row.get("driver_hi"), row.get("driver_exact")
-            else:
-                other_lo, other_hi, other_ex = row.get("load_lo"), row.get("load_hi"), row.get("load_exact")
-            arc_result[i] = propagate(
-                sig.window,
-                row.get("signal_lo"), row.get("signal_hi"), row.get("signal_exact"),
-                other_lo, other_hi, other_ex, row.get("map_exact"))
+            near_lo, near_hi = row.get("signal_lo"), row.get("signal_hi")
+            far_lo = row.get("driver_lo") if not load else row.get("load_lo")
+            far_hi = row.get("driver_hi") if not load else row.get("load_hi")
+            map_kind = "exact" if row.get("map_exact") == 1 else "inexact"
+            arc_result[i] = propagate(sig.window, near_lo, near_hi, far_lo, far_hi, map_kind)
 
     for index, row in enumerate(raw):
         # Bit mode: an arc that does not touch the requested window feeds
@@ -280,7 +270,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         if bit_mode and arc_result[index] is SKIP:
             continue
         kind = row["driver_kind"] if not load else row["load_kind"]
-        dk = dep_kind.get(row.get("dep_id"))
+        dk = row.get("driver_kind") if not load else row.get("load_kind")
         key = _provenance(row, index, dk)
         existing = next((h for h in hops if h["_key"] == key), None)
         far_net = row["driver_net_id"] if not load else row["load_net_id"]
@@ -365,6 +355,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
             "procedure": procedure,
             "unreachable": unreachable,
             "call_chain": call_chain,
+            "_dep_kind": dk,
         }
         if bit_mode:
             hop["_far_windows"] = {}
@@ -398,6 +389,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
             h.pop("_far_windows", None)
             h.pop("_widened_far", None)
         h.pop("_key", None)
+        h["dep_kind"] = h.pop("_dep_kind", None)
 
     structural = [h for h in hops if h["kind"] not in ("alias", "control")]
     if not structural:

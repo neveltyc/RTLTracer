@@ -8,9 +8,8 @@ stores them.  A window is (lo, hi), inclusive; None means the whole net.
 SKIP = object()
 
 
-def propagate(window, cur_lo, cur_hi, cur_exact,
-              other_lo, other_hi, other_exact, map_exact):
-    """Carry a bit window across one dependency edge.
+def propagate(window, near_lo, near_hi, far_lo, far_hi, map_kind):
+    """Carry a bit window across one edge from near to far.
 
     Returns SKIP when the window does not touch the edge, None when
     precision is lost (the far side widens to the whole net), or the
@@ -19,24 +18,22 @@ def propagate(window, cur_lo, cur_hi, cur_exact,
     if window is None:
         return None
     wlo, whi = window
-    if cur_lo is not None and cur_hi is not None:
-        olo, ohi = max(wlo, cur_lo), min(whi, cur_hi)
+    if near_lo is not None and near_hi is not None:
+        olo, ohi = max(wlo, near_lo), min(whi, near_hi)
         if olo > ohi:
             return SKIP                     # disjoint: edge feeds other bits
         overlap = (olo, ohi)
-    elif cur_lo is None and cur_hi is None and cur_exact == 1:
+    elif near_lo is None and near_hi is None:
         overlap = (wlo, whi)                # whole net covers the window
     else:
         return None                         # unknown extent: widen
-    if not (cur_exact == 1 and other_exact == 1 and map_exact == 1):
+    if map_kind != "exact":
         return None                         # not an exact bit correspondence
-    if cur_lo is not None and other_lo is not None:
-        if (cur_hi - cur_lo) != (other_hi - other_lo):
-            return None                     # width mismatch
-        base_cur, base_other = cur_lo, other_lo
-    elif cur_lo is None and other_lo is None:
-        base_cur, base_other = 0, 0         # whole to whole, offset-preserving
-    else:
-        return None                         # mixed whole/partial: widen
-    return (base_other + overlap[0] - base_cur,
-            base_other + overlap[1] - base_cur)
+    if near_lo is not None and far_lo is not None:
+        if (near_hi - near_lo) != (far_hi - far_lo):
+            return None
+        return (far_lo + overlap[0] - near_lo,
+                far_lo + overlap[1] - near_lo)
+    if near_lo is None and far_lo is None:
+        return overlap                      # whole to whole, offset-preserving
+    return None                             # mixed whole/partial: widen

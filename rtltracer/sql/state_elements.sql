@@ -3,9 +3,9 @@
 --
 -- Base set: nonblocking writes in an edge-sensitive procedure (clocked)
 -- and writes in always_latch (latch). Then the property is carried across
--- every whole-width connection arc (signal_lo/driver_lo both NULL): a
--- flop's output wired whole to a port makes the far net a state element
--- too. Half-width ties do not propagate.
+-- every whole-width connection arc (src_lo/dst_lo both NULL): a flop's
+-- output wired whole to a port makes the far net a state element too.
+-- Half-width ties do not propagate.
 --
 -- Returns one row per state net: net_id + state_kind ('clocked'|'latch').
 WITH state_kind(net_id, kind) AS (
@@ -27,18 +27,16 @@ WITH state_kind(net_id, kind) AS (
 prop(net_id, kind) AS (
     SELECT net_id, kind FROM state_kind
   UNION
-    SELECT d.signal_net_id, p.kind
+    SELECT d.dst_net_id, p.kind
     FROM prop p
-    JOIN v_driver d ON d.driver_net_id = p.net_id
-    WHERE d.driver_kind = 'connection'
-      AND d.driver_net_id IS NOT NULL
-      AND d.signal_lo IS NULL AND d.driver_lo IS NULL
+    JOIN v_trace_edge d ON d.src_net_id = p.net_id
+    WHERE d.edge_kind = 'connection'
+      AND d.src_lo IS NULL AND d.dst_lo IS NULL
   UNION
-    SELECT d.driver_net_id, p.kind
+    SELECT d.src_net_id, p.kind
     FROM prop p
-    JOIN v_driver d ON d.signal_net_id = p.net_id
-    WHERE d.driver_kind = 'connection'
-      AND d.driver_net_id IS NOT NULL
-      AND d.signal_lo IS NULL AND d.driver_lo IS NULL
+    JOIN v_trace_edge d ON d.dst_net_id = p.net_id
+    WHERE d.edge_kind = 'connection'
+      AND d.src_lo IS NULL AND d.dst_lo IS NULL
 )
 SELECT DISTINCT net_id, kind FROM prop

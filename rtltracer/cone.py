@@ -1,8 +1,10 @@
-"""fanin, fanout, path — the cone commands. BFS engine only, three
-pruning rules: state elements (--comb, --through-latch), dead branches
-(constant-condition arms), and call-site isolation (admissible /
-next_ctx).  Gating: --no-ctl excludes control arcs; --follow-ctl /
---ctl-depth=N follow them instead of stopping at them."""
+"""fanin, fanout, path - the cone commands. Graph edges come from v_trace_edge.
+
+BFS engine only, three pruning rules: state elements (--comb, --through-latch),
+dead branches (constant-condition arms), and call-site isolation (admissible /
+next_ctx). Gating: --no-ctl excludes control edges; --follow-ctl / --ctl-depth=N
+follow them instead of stopping at them."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -61,7 +63,7 @@ def _next_ctx(facts: Facts, row: dict, ctx: int | None, far: int) -> int | None:
     site = row.get("call_site_id")
     if site is None:
         return ctx if far in facts.body_local else None
-    if row.get("dep_kind") == "procedure":
+    if row.get("edge_kind") == "procedure":
         leaving = ctx == site
         outer = facts.call_parent.get(site)
         nxt = outer if leaving else site
@@ -140,15 +142,20 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int, no_ctl: bool,
         rows = _arcs_batch(cursor, name, nets, no)
         by_signal: dict[int, list[dict]] = {}
         for r in rows:
-            key = r["tgt_net_id"] if direction == "driver" else r["src_net_id"]
+            key = r["dst_net_id"] if direction == "driver" else r["src_net_id"]
             by_signal.setdefault(key, []).append(r)
 
+        near, far = ("dst", "src") if direction == "driver" else ("src", "dst")
+        near_lo = f"{near}_lo"
+        near_hi = f"{near}_hi"
+        far_lo = f"{far}_lo"
+        far_hi = f"{far}_hi"
         next_frontier = []
         for net, ctx, ctl_left, window in frontier:
             for r in by_signal.get(net, []):
                 if not _admissible(facts, r.get("call_site_id"), ctx):
                     continue
-                is_control = r.get("dep_kind") == "control"
+                is_control = r.get("edge_kind") == "control"
                 # Gating: no_ctl already filtered by SQL, but for Direct
                 # (ctl_left == 0, no follow_ctl, no ctl_depth) we stop here.
                 if is_control and ctl_left == 0 and ctl_depth is None and not follow_ctl:
@@ -164,16 +171,16 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int, no_ctl: bool,
                     nxt = None
                 else:
                     nxt = propagate(window,
-                                      r.get("cur_lo"), r.get("cur_hi"), r.get("cur_exact"),
-                                      r.get("other_lo"), r.get("other_hi"), r.get("other_exact"),
-                                      r.get("map_exact"))
+                                      r.get(near_lo), r.get(near_hi),
+                                      r.get(far_lo), r.get(far_hi),
+                                      r.get("map_kind"))
                     if nxt is SKIP:
                         continue          # this arc does not feed the selected bits
                 # The end to advance to is the one opposite the frontier net:
                 # the driver for a fan-in, the load for a fan-out.
-                far = r["src_net_id"] if direction == "driver" else r["tgt_net_id"]
+                far_net = r[f"{far}_net_id"]
                 r["_depth"] = d
-                r["ends_at_state"] = _at_state(facts, comb, through_latch, far)
+                r["ends_at_state"] = _at_state(facts, comb, through_latch, far_net)
                 r["_unreachable"] = _unreachable(cursor, facts, r.get("stmt_id"))
                 r["_cur_window"] = window
                 r["_far_window"] = nxt
@@ -181,14 +188,14 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int, no_ctl: bool,
                 edges.append(r)
                 if r["_unreachable"] or r["ends_at_state"]:
                     continue
-                nctx = _next_ctx(facts, r, ctx, far)
+                nctx = _next_ctx(facts, r, ctx, far_net)
                 nctl = ctl_left
                 if is_control and ctl_left >= 0:
                     if ctl_left == 0:
                         continue
                     nctl = ctl_left - 1
-                for part in _uncovered(covered, (far, nctx, nctl), nxt):
-                    next_frontier.append((far, nctx, nctl, part))
+                for part in _uncovered(covered, (far_net, nctx, nctl), nxt):
+                    next_frontier.append((far_net, nctx, nctl, part))
         frontier = next_frontier
     return edges
 
@@ -204,7 +211,7 @@ def _walk(cursor, db: Db, signal: str, direction: str, depth: int,
     if depth > 0:
         raw = [r for r in raw if r["_depth"] <= depth]
     if no_ctl:
-        raw = [r for r in raw if r.get("dep_kind") != "control"]
+        raw = [r for r in raw if r.get("edge_kind") != "control"]
     edges, nodes = _name_edges(cursor, raw, direction)
     data = {
         "start": sig.full_path,
@@ -234,29 +241,29 @@ def _name_edges(cursor, raw: list[dict], direction: str):
     net_ids = set()
     for r in raw:
         net_ids.add(r["src_net_id"])
-        net_ids.add(r["tgt_net_id"])
+        net_ids.add(r["dst_net_id"])
     names = {}
     if net_ids:
         names = _name_nets(cursor, net_ids)
     src_reader = Source(cursor)
     edges = []
     for r in raw:
-        src, tgt = r["src_net_id"], r["tgt_net_id"]
-        kind = r.get("driver_kind") or r.get("load_kind")
+        src, tgt = r["src_net_id"], r["dst_net_id"]
+        kind = r.get("edge_kind")
         file_path, line = r.get("file_path"), r.get("src_line")
         statement = src_reader.line(file_path, line)[0] if file_path and line else None
         # The frontier net's window sits on the near end; the far net's on the
-        # other. For a fan-in the frontier is the target, for a fan-out the source.
+        # other side. For a fan-in the frontier is the target, for a fan-out the source.
         cur_win, far_win = r.get("_cur_window"), r.get("_far_window")
         target_win, source_win = (cur_win, far_win) if direction == "driver" else (far_win, cur_win)
         edges.append({
             "source": names.get(src, f"<net {src}>"),
             "target": names.get(tgt, f"<net {tgt}>"),
             "kind": kind,
-            "raw_kind": r.get("dep_kind"),
+            "edge_source": r.get("edge_source"),
             "depth": r["_depth"],
-            "boundary": kind in ("connection", "connection_expression") or r.get("driver_ref") is not None or r.get("load_ref") is not None,
-            "control": r.get("dep_kind") == "control",
+            "boundary": r.get("edge_source") == "conn_arc" or kind in ("connection", "connection_expression"),
+            "control": r.get("edge_kind") == "control",
             "ends_at_state": r.get("ends_at_state", False),
             "unreachable": r.get("_unreachable", False),
             "source_window": list(source_win) if source_win else None,
@@ -313,17 +320,17 @@ def _narrow_trail(trail: list, source_window: tuple[int, int] | None,
         if edge is None:
             nxt = None
         elif reverse:
-            # fanin row: cur = target side, other = source side
+            # fanin row: near = target side, far = source side
             nxt = propagate(win,
-                            edge.get("other_lo"), edge.get("other_hi"), edge.get("other_exact"),
-                            edge.get("cur_lo"), edge.get("cur_hi"), edge.get("cur_exact"),
-                            edge.get("map_exact"))
+                            edge.get("dst_lo"), edge.get("dst_hi"),
+                            edge.get("src_lo"), edge.get("src_hi"),
+                            edge.get("map_kind"))
         else:
-            # fanout row: cur = source side, other = target side
+            # fanout row: near = source side, far = target side
             nxt = propagate(win,
-                            edge.get("cur_lo"), edge.get("cur_hi"), edge.get("cur_exact"),
-                            edge.get("other_lo"), edge.get("other_hi"), edge.get("other_exact"),
-                            edge.get("map_exact"))
+                            edge.get("src_lo"), edge.get("src_hi"),
+                            edge.get("dst_lo"), edge.get("dst_hi"),
+                            edge.get("map_kind"))
         if nxt is SKIP or nxt is None:
             return trail
         win = nxt
@@ -340,7 +347,7 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
               ctl_depth: int | None = None):
     """Shortest path via BFS, same pruning as the cone walk. `direction` is
     "forward" (fanout from the start net) or "reverse" (fanin from the start
-    net); the SQL views already normalize cur/other windows, so propagation
+    net); near/far windows are resolved from src/dst on the edge row.
     is direction-agnostic. Returns (trail, precision_lost) where trail is a
     list of (net_id, window, edge) from start to goal, or None."""
     if _goal_matches(start_id, start_window, goal_id, goal_window):
@@ -351,8 +358,11 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
     if direction == "reverse" and comb and _at_state(facts, comb, through_latch, start_id):
         return None, False
     bfs_name = "fanout_bfs" if direction == "forward" else "fanin_bfs"
-    near = "src_net_id" if direction == "forward" else "tgt_net_id"
-    far_field = "tgt_net_id" if direction == "forward" else "src_net_id"
+    near, far = ("src", "dst") if direction == "forward" else ("dst", "src")
+    near_lo = f"{near}_lo"
+    near_hi = f"{near}_hi"
+    far_lo = f"{far}_lo"
+    far_hi = f"{far}_hi"
     ctl_init = 0 if not follow_ctl and ctl_depth is None else (ctl_depth if ctl_depth is not None else -1)
     start = (start_id, None, ctl_init, start_window)
     visited = {start}
@@ -366,13 +376,11 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
         rows = _arcs_batch(cursor, bfs_name, nets, no)
         by_signal: dict[int, list[dict]] = {}
         for r in rows:
-            by_signal.setdefault(r[near], []).append(r)
+            by_signal.setdefault(r[f"{near}_net_id"], []).append(r)
         next_frontier = []
         for net, ctx, ctl_left, window in frontier:
             for r in by_signal.get(net, []):
-                if not _admissible(facts, r.get("call_site_id"), ctx):
-                    continue
-                is_control = r.get("dep_kind") == "control"
+                is_control = r.get("edge_kind") == "control"
                 if is_control and ctl_left == 0 and ctl_depth is None and not follow_ctl:
                     continue
                 widened = False
@@ -380,33 +388,33 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                     nxt = None
                 else:
                     nxt = propagate(window,
-                                      r.get("cur_lo"), r.get("cur_hi"), r.get("cur_exact"),
-                                      r.get("other_lo"), r.get("other_hi"), r.get("other_exact"),
-                                      r.get("map_exact"))
+                                      r.get(near_lo), r.get(near_hi),
+                                      r.get(far_lo), r.get(far_hi),
+                                      r.get("map_kind"))
                     if nxt is SKIP:
                         continue
                     widened = window is not None and nxt is None
-                far = r[far_field]
+                far_net = r[f"{far}_net_id"]
                 if _unreachable(cursor, facts, r.get("stmt_id")):
                     continue
-                nctx = _next_ctx(facts, r, ctx, far)
+                nctx = _next_ctx(facts, r, ctx, far_net)
                 nctl = ctl_left
                 if is_control and ctl_left >= 0:
                     if ctl_left == 0:
                         continue
                     nctl = ctl_left - 1
-                key = (far, nctx, nctl, nxt)
+                key = (far_net, nctx, nctl, nxt)
                 if key in visited:
                     continue
                 visited.add(key)
                 row_copy = dict(r)
                 row_copy["_widened"] = widened
                 parents[key] = ((net, ctx, ctl_left, window), row_copy)
-                is_goal = far == goal_id
+                is_goal = far_net == goal_id
                 # Forward cannot enter a state (including a state target) .
-                if direction == "forward" and _at_state(facts, comb, through_latch, far):
+                if direction == "forward" and _at_state(facts, comb, through_latch, far_net):
                     continue
-                if _goal_matches(far, nxt, goal_id, goal_window):
+                if _goal_matches(far_net, nxt, goal_id, goal_window):
                     trail = []
                     at = key
                     while at is not None:
@@ -418,12 +426,12 @@ def _path_bfs(cursor, facts: Facts, start_id: int, goal_id: int,
                         trail.append((at[0], at[3], edge))
                         at = parent_state
                     return trail[::-1], False
-                if goal_window is not None and far == goal_id and nxt is None:
+                if goal_window is not None and far_net == goal_id and nxt is None:
                     precision_lost = True
                     continue
                 # Reverse: source reached without exact match, or a state
                 # that is not the source goal, is the end of the walk.
-                if direction == "reverse" and (is_goal or _at_state(facts, comb, through_latch, far)):
+                if direction == "reverse" and (is_goal or _at_state(facts, comb, through_latch, far_net)):
                     continue
                 next_frontier.append(key)
         frontier = next_frontier
@@ -471,10 +479,10 @@ def path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
         for (a, a_win, _), (b, b_win, edge) in zip(trail, trail[1:]):
             file_path = edge.get("file_path") if edge else None
             line = edge.get("src_line") if edge else None
-            kind = (edge.get("driver_kind") or edge.get("load_kind")) if edge else None
+            kind = edge.get("edge_kind") if edge else None
             edges.append({
                 "source": names.get(edge["src_net_id"], f"<net {edge['src_net_id']}>") if edge else names.get(a, f"<net {a}>"),
-                "target": names.get(edge["tgt_net_id"], f"<net {edge['tgt_net_id']}>") if edge else names.get(b, f"<net {b}>"),
+                "target": names.get(edge["dst_net_id"], f"<net {edge['dst_net_id']}>") if edge else names.get(b, f"<net {b}>"),
                 "source_window": list(a_win) if a_win else None,
                 "target_window": list(b_win) if b_win else None,
                 "widened": bool(edge.get("_widened")) if edge else False,

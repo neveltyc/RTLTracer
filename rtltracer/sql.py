@@ -1,5 +1,5 @@
-"""Load the SQL statements this tool runs. Each file is a named query;
-the SQL is the contract, Python only binds parameters and reads rows."""
+"""Load the SQL statements this tool runs. SQL performs indexed fact
+lookup; Python implements traversal semantics."""
 from __future__ import annotations
 
 import pathlib
