@@ -29,14 +29,16 @@ def propagate(window, near_lo, near_hi, far_lo, far_hi, map_kind):
         return None                         # unknown extent: widen
     if map_kind != "exact":
         return None                         # not an exact bit correspondence
-    if near_lo is not None and far_lo is not None:
-        if (near_hi - near_lo) != (far_hi - far_lo):
-            return None
-        return (far_lo + overlap[0] - near_lo,
-                far_lo + overlap[1] - near_lo)
-    if near_lo is None and far_lo is None:
-        return overlap                      # whole to whole, offset-preserving
-    return None                             # mixed whole/partial: widen
+    # exact ⇒ equal-width and offset-preserving. A whole end is implicitly
+    # [0, width-1], so its base bit is 0; a concrete end bases at its lo. This
+    # matches v_trace_edge, which normalizes a whole exact end the same way.
+    if near_lo is not None and far_lo is not None and \
+            (near_hi - near_lo) != (far_hi - far_lo):
+        return None                         # concrete widths disagree
+    near_base = near_lo if near_lo is not None else 0
+    far_base = far_lo if far_lo is not None else 0
+    return (far_base + overlap[0] - near_base,
+            far_base + overlap[1] - near_base)
 
 
 def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:

@@ -41,7 +41,7 @@ def j(*args: str) -> dict:
 def test_info():
     d = j("info", DB)
     assert d["status"] == "ok"
-    assert d["data"]["schema_version"] == 21
+    assert d["data"]["schema_version"] == 22
     assert d["data"]["analysis"]["status"] == "complete"
     assert d["summary"]["sources"] >= 1
 
@@ -232,6 +232,17 @@ def test_trace_keeps_bit_across_whole_net_exact_arc():
     hop = hops[0]
     assert hop["signals"] == ["bits.mid"]
     assert hop["far_windows"] == {"bits.mid": [[3, 3]]}
+    assert hop.get("widened_far", []) == []
+
+
+def test_trace_keeps_bit_across_mixed_whole_concrete_exact_arc():
+    # top.sel[1] <- mode, where mode is a 1-bit net: the driver end is whole
+    # (driver_lo NULL) and the signal end concrete (sel[1]), an exact tie of
+    # equal width. trace must carry it to mode[0], matching fanin, rather than
+    # widening because one end is whole and the other concrete.
+    hops = j("trace", DB, "top.sel[1]")["data"]["hops"]
+    hop = next(h for h in hops if h["signals"] == ["top.mode"])
+    assert hop["far_windows"] == {"top.mode": [[0, 0]]}
     assert hop.get("widened_far", []) == []
 
 

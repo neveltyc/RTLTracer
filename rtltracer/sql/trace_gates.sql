@@ -1,5 +1,5 @@
 -- trace: the gating chain of one statement, outermost first.
--- v20's branch_ancestor makes this one indexed lookup; reads come from
+-- branch_ancestor makes this one indexed lookup; reads come from
 -- branch_ref per level.
 SELECT v.depth,
        v.branch_kind,

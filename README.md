@@ -1,6 +1,6 @@
 # RTLTracer
 
-查询 [RTLDebugDBKit](https://github.com/neveltyc/RTLDebugDBKit) 导出的设计数据库（schema v21），回答信号级问题：谁驱动它、谁读它、它依赖什么、从哪里到哪。
+查询 [RTLDebugDBKit](https://github.com/neveltyc/RTLDebugDBKit) 导出的设计数据库（schema v22），回答信号级问题：谁驱动它、谁读它、它依赖什么、从哪里到哪。
 
 ## 安装
 
@@ -135,7 +135,7 @@ fanin of top.q
 
 工具只反映导出的内容，不做仿真判断；哪些驱动实际生效、某个值对不对，需要结合波形自己判断。
 
-只对接当前 schema 版本（v21），不做前向兼容：库的版本对不上会直接报错，上游升级后用匹配的 `rtl-designdb` 重新导出即可。
+只对接当前 schema 版本（v22），不做前向兼容：库的版本对不上会直接报错，上游升级后用匹配的 `rtl-designdb` 重新导出即可。
 
 ## License
 

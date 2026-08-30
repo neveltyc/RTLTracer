@@ -1,4 +1,4 @@
-"""RTLTracer — signal trace, cone and path analysis over an RTLDebugDBKit v21 database.
+"""RTLTracer — signal trace, cone and path analysis over an RTLDebugDBKit v22 database.
 
 Usage:  rtltracer <command> <db> [args] [--json]
 
@@ -345,7 +345,7 @@ def main():
         prog=TOOL, formatter_class=argparse.RawDescriptionHelpFormatter,
         usage="%(prog)s [-h] [-V] COMMAND [ARGS]",
         description="Signal trace, driver and load analysis over an rtl-designdb "
-                    "design database (schema v21).",
+                    "design database (schema v22).",
         epilog=_HELP)
     p.add_argument("-V", "--version", action="version", version=f"{TOOL} {__version__}")
 
