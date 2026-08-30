@@ -4,7 +4,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from rtltracer import sql
+from rtltracer.sql import sql
 
 SCHEMA_VERSION = 22
 

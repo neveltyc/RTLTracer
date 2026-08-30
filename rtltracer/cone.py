@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from rtltracer import sql
+from rtltracer.sql import sql
 from rtltracer.bits import SKIP, propagate, uncovered
 from rtltracer.db import Db, net_names
 from rtltracer.resolve import resolve
@@ -152,9 +152,9 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int,
     return edges
 
 
-def _walk(cursor, db: Db, signal: str, direction: str, depth: int,
-          no_ctl: bool, comb: bool, through_latch: bool,
-          follow_ctl: bool, ctl_depth: int | None, top: str) -> dict:
+def walk(cursor, db: Db, signal: str, direction: str, depth: int,
+         no_ctl: bool, comb: bool, through_latch: bool,
+         follow_ctl: bool, ctl_depth: int | None, top: str) -> dict:
     sig = resolve(cursor, signal, top)
     facts = load_facts(cursor)
     bfs_name = "fanin_bfs" if direction == "driver" else "fanout_bfs"

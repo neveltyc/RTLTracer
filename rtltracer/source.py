@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from rtltracer import sql
+from rtltracer.sql import sql
 
 
 def _candidate_paths(src: str, file_path: str) -> list[str]:

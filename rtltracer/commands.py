@@ -2,7 +2,7 @@
 the renderer turns into terminal text or JSON; SQL stays in rtltracer/sql/."""
 from __future__ import annotations
 
-from rtltracer import sql
+from rtltracer.sql import sql
 from rtltracer.bits import SKIP, merge_intervals, propagate
 from rtltracer.db import Db, net_names
 from rtltracer.resolve import ResolveError, resolve

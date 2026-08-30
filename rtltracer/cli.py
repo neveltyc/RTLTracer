@@ -24,8 +24,8 @@ from pathlib import Path
 
 from rtltracer import __version__
 from rtltracer.db import DbError, open_db
-from rtltracer import commands
-from rtltracer import cone
+from rtltracer.commands import info, tree, find, trace
+from rtltracer.cone import walk, path
 from rtltracer.resolve import ResolveError
 
 TOOL = "rtltracer"
@@ -362,13 +362,13 @@ def main():
     common.add_argument("-h", "--help", action=_Help, help=argparse.SUPPRESS)
     common.add_argument("--json", action="store_true")
 
-    walk = argparse.ArgumentParser(add_help=False)  # fanin / fanout / path
-    walk.add_argument("--comb", action="store_true")
-    walk.add_argument("--through-latch", action="store_true")
-    walk.add_argument("--no-ctl", action="store_true")
-    walk.add_argument("--follow-ctl", action="store_true")
-    walk.add_argument("--ctl-depth", type=int, default=None, metavar="N")
-    walk.add_argument("--top", default="", metavar="NAME")
+    walk_opts = argparse.ArgumentParser(add_help=False)  # fanin / fanout / path
+    walk_opts.add_argument("--comb", action="store_true")
+    walk_opts.add_argument("--through-latch", action="store_true")
+    walk_opts.add_argument("--no-ctl", action="store_true")
+    walk_opts.add_argument("--follow-ctl", action="store_true")
+    walk_opts.add_argument("--ctl-depth", type=int, default=None, metavar="N")
+    walk_opts.add_argument("--top", default="", metavar="NAME")
 
     # The one help text lives in _HELP; the auto per-command listing is hidden.
     sub = p.add_subparsers(dest="command", metavar="COMMAND", required=True,
@@ -401,17 +401,17 @@ def main():
     ptr.add_argument("--ctl", action="store_true")
     ptr.add_argument("--top", default="", metavar="NAME")
 
-    pfi = cmd("fanin", walk)
+    pfi = cmd("fanin", walk_opts)
     pfi.add_argument("db", metavar="DB", type=Path)
     pfi.add_argument("signal", metavar="SIGNAL")
     pfi.add_argument("--depth", type=int, default=4, metavar="N")
 
-    pfo = cmd("fanout", walk)
+    pfo = cmd("fanout", walk_opts)
     pfo.add_argument("db", metavar="DB", type=Path)
     pfo.add_argument("signal", metavar="SIGNAL")
     pfo.add_argument("--depth", type=int, default=4, metavar="N")
 
-    pp = cmd("path", walk)
+    pp = cmd("path", walk_opts)
     pp.add_argument("db", metavar="DB", type=Path)
     pp.add_argument("from_signal", metavar="FROM")
     pp.add_argument("to_signal", metavar="TO")
@@ -435,26 +435,26 @@ def main():
     try:
         _t0 = time.perf_counter()
         if cmd == "info":
-            outcome = commands.info(db)
+            outcome = info(db)
         elif cmd == "tree":
-            outcome = commands.tree(db, args.scope, args.depth, args.limit)
+            outcome = tree(db, args.scope, args.depth, args.limit)
         elif cmd == "find":
             kind = "module" if args.modules else ("instance" if args.instances else "net")
-            outcome = commands.find(db, args.pattern, kind, args.limit)
+            outcome = find(db, args.pattern, kind, args.limit)
         elif cmd == "trace":
-            outcome = commands.trace(db, args.signal, args.load, args.ctl, top)
+            outcome = trace(db, args.signal, args.load, args.ctl, top)
         elif cmd == "fanin":
-            outcome = cone._walk(db.conn.cursor(), db, args.signal, "driver",
-                                 args.depth, args.no_ctl, args.comb, args.through_latch,
-                                 args.follow_ctl, args.ctl_depth, top)
+            outcome = walk(db.conn.cursor(), db, args.signal, "driver",
+                           args.depth, args.no_ctl, args.comb, args.through_latch,
+                           args.follow_ctl, args.ctl_depth, top)
         elif cmd == "fanout":
-            outcome = cone._walk(db.conn.cursor(), db, args.signal, "load",
-                                 args.depth, args.no_ctl, args.comb, args.through_latch,
-                                 args.follow_ctl, args.ctl_depth, top)
+            outcome = walk(db.conn.cursor(), db, args.signal, "load",
+                           args.depth, args.no_ctl, args.comb, args.through_latch,
+                           args.follow_ctl, args.ctl_depth, top)
         elif cmd == "path":
-            outcome = cone.path(db, args.from_signal, args.to_signal,
-                                args.depth, args.no_ctl, args.comb, args.through_latch,
-                                args.follow_ctl, args.ctl_depth, top)
+            outcome = path(db, args.from_signal, args.to_signal,
+                           args.depth, args.no_ctl, args.comb, args.through_latch,
+                           args.follow_ctl, args.ctl_depth, top)
         else:
             raise DbError("BAD_COMMAND", f"unknown command: {cmd}")
         outcome["summary"]["_ms"] = int((time.perf_counter() - _t0) * 1000)

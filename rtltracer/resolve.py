@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from rtltracer import sql
+from rtltracer.sql import sql
 
 _SEPS = {".", "/"}
 _BIT_SELECT = re.compile(r"^(.*)\[(\d+)(?::(\d+))?\]$")
@@ -144,7 +144,7 @@ def _child(cursor, node: int, name: str):
     return cursor.execute(sql.load("child_node"), {"parent": node, "name": name}).fetchone()
 
 
-def _walk(cursor, root: int, levels: list[str], leaf: str) -> dict | None:
+def _resolve_walk(cursor, root: int, levels: list[str], leaf: str) -> dict | None:
     """Walk the tree down `levels`, then find `leaf` as a net of the
     instance reached. Returns None when the path does not resolve."""
     root_node = cursor.execute(sql.load("node_by_id"), {"node_id": root}).fetchone()
@@ -262,7 +262,7 @@ def resolve(cursor, signal: str, top: str = "") -> ResolvedSignal:
     # The leaf may itself contain dots (generate/subroutine segments, an
     # escaped identifier), so the split that resolves wins.
     for split in range(len(rest) - 1, -1, -1):
-        result = _walk(cursor, root_id, rest[:split], ".".join(rest[split:]))
+        result = _resolve_walk(cursor, root_id, rest[:split], ".".join(rest[split:]))
         if result is not None:
             net = result["net"]
             below = result["below"]
