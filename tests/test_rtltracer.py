@@ -147,6 +147,17 @@ def test_trace_ctl_adds_control_reads():
     assert ctl > plain
 
 
+def test_trace_load_ctl_adds_control_reads():
+    # v_load folds control deps into dataflow; without --ctl the reads from
+    # the case selector must be filtered, with --ctl they must appear and
+    # carry dep_kind="control" so bit mode does not treat them as dataflow.
+    plain = j("trace", DB, "top.sel", "--load")["data"]["hops"]
+    ctl = j("trace", DB, "top.sel", "--load", "--ctl")["data"]["hops"]
+    assert plain == []
+    assert len(ctl) == 3
+    assert all(h["dep_kind"] == "control" for h in ctl)
+    assert all(h["kind"] == "dataflow" for h in ctl)
+
 def test_trace_top_option():
     assert j("trace", DB, "top.q", "--top", "top")["status"] == "ok"
 

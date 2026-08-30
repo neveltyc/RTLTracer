@@ -248,13 +248,21 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
                               for r in cur.execute(sql.load("node_paths")))
         return node_paths.get(node_id)
 
+    # dep kinds (only meaningful on dataflow rows; v_load folds control deps
+    # into dataflow, so the kind is looked up per dep_id)
+    dep_kind: dict[int, str | None] = {}
+    for r in raw:
+        if r.get("dep_id") is not None and r["dep_id"] not in dep_kind:
+            d = cur.execute(sql.load("trace_depkind"), {"dep_id": r["dep_id"]}).fetchone()
+            dep_kind[r["dep_id"]] = d["dep_kind"] if d else None
+
     # Bit mode: carry the requested window across each arc. SKIP rows feed
     # other bits (filtered out); None widens the far end to the whole net.
     bit_mode = sig.window is not None
     arc_result: dict[int, object] = {}
     if bit_mode:
         for i, row in enumerate(raw):
-            dk = row.get("driver_kind") if not load else row.get("load_kind")
+            dk = dep_kind.get(row.get("dep_id"))
             if dk == "control":
                 arc_result[i] = None
                 continue
@@ -270,7 +278,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         if bit_mode and arc_result[index] is SKIP:
             continue
         kind = row["driver_kind"] if not load else row["load_kind"]
-        dk = row.get("driver_kind") if not load else row.get("load_kind")
+        dk = dep_kind.get(row.get("dep_id"))
         key = _provenance(row, index, dk)
         existing = next((h for h in hops if h["_key"] == key), None)
         far_net = row["driver_net_id"] if not load else row["load_net_id"]
