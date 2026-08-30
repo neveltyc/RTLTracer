@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from rtltracer import sql
+from rtltracer.bits import SKIP, propagate
 from rtltracer.db import Db
 from rtltracer.resolve import resolve
 from rtltracer.source import Source
@@ -74,9 +75,6 @@ def _at_state(facts: Facts, comb: bool, through_latch: bool, far: int) -> bool:
     return far in facts.clocked or (far in facts.latch and not through_latch)
 
 
-_SKIP = object()   # sentinel: an edge the bit window does not touch
-
-
 def _merge(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     out: list[tuple[int, int]] = []
     for lo, hi in sorted(intervals):
@@ -122,37 +120,6 @@ def _uncovered(covered: dict, key, window: tuple[int, int] | None) -> list:
     return parts
 
 
-def _propagate(window, r: dict):
-    """Carry a bit window across one dependency edge. Returns _SKIP when the
-    window does not touch the edge, None when precision is lost (widen to the
-    whole far net), or the far-side (lo, hi). Offsets are LSB-relative."""
-    if window is None:
-        return None
-    wlo, whi = window
-    cur_lo, cur_hi, cur_exact = r.get("cur_lo"), r.get("cur_hi"), r.get("cur_exact")
-    if cur_lo is not None and cur_hi is not None:
-        olo, ohi = max(wlo, cur_lo), min(whi, cur_hi)
-        if olo > ohi:
-            return _SKIP                        # disjoint: this edge feeds other bits
-        overlap = (olo, ohi)
-    elif cur_lo is None and cur_hi is None and cur_exact == 1:
-        overlap = (wlo, whi)                     # whole net covers the window
-    else:
-        return None                             # unknown extent: widen
-    if not (cur_exact == 1 and r.get("other_exact") == 1 and r.get("map_exact") == 1):
-        return None                             # not an exact bit correspondence
-    other_lo, other_hi = r.get("other_lo"), r.get("other_hi")
-    if cur_lo is not None and other_lo is not None:
-        if (cur_hi - cur_lo) != (other_hi - other_lo):
-            return None                         # width mismatch
-        base_cur, base_other = cur_lo, other_lo
-    elif cur_lo is None and other_lo is None:
-        base_cur, base_other = 0, 0             # whole to whole, offset-preserving
-    else:
-        return None                             # mixed whole/partial: widen
-    return (base_other + overlap[0] - base_cur, base_other + overlap[1] - base_cur)
-
-
 def _cone_bfs(cursor, facts: Facts, name: str, start: int, no_ctl: bool,
               comb: bool, through_latch: bool, follow_ctl: bool,
               ctl_depth: int | None, depth: int, direction: str,
@@ -196,8 +163,11 @@ def _cone_bfs(cursor, facts: Facts, name: str, start: int, no_ctl: bool,
                 if is_control:
                     nxt = None
                 else:
-                    nxt = _propagate(window, r)
-                    if nxt is _SKIP:
+                    nxt = propagate(window,
+                                      r.get("cur_lo"), r.get("cur_hi"), r.get("cur_exact"),
+                                      r.get("other_lo"), r.get("other_hi"), r.get("other_exact"),
+                                      r.get("map_exact"))
+                    if nxt is SKIP:
                         continue          # this arc does not feed the selected bits
                 # The end to advance to is the one opposite the frontier net:
                 # the driver for a fan-in, the load for a fan-out.
@@ -347,8 +317,11 @@ def _path_bfs(cursor, facts: Facts, from_id: int, to_id: int, max_depth: int,
                 if is_control:
                     nxt = None
                 else:
-                    nxt = _propagate(window, r)
-                    if nxt is _SKIP:
+                    nxt = propagate(window,
+                                      r.get("cur_lo"), r.get("cur_hi"), r.get("cur_exact"),
+                                      r.get("other_lo"), r.get("other_hi"), r.get("other_exact"),
+                                      r.get("map_exact"))
+                    if nxt is SKIP:
                         continue
                 far = r["tgt_net_id"]
                 if _unreachable(cursor, facts, r.get("stmt_id")):

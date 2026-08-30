@@ -161,6 +161,48 @@ def test_trace_bit_select():
     assert j("trace", DB, "top.q[3:0]")["data"]["bits"] == "[3:0]"
 
 
+def test_trace_bit_select_maps_driver_window():
+    # mid[7:4] = b[3:0]; mid[3:0] = a[3:0].  mid[7] feeds only from b, and
+    # the exact slice maps it back to b[3].
+    d = j("trace", BITS, "bits.mid[7]")["data"]
+    assert d["granularity"] == "bit"
+    assert d["start_window"] == [7, 7]
+    assert len(d["hops"]) == 1
+    hop = d["hops"][0]
+    assert hop["signals"] == ["bits.b"]
+    assert hop["far_windows"] == {"bits.b": [3, 3]}
+    assert hop["widened_far"] == []
+
+
+def test_trace_bit_select_prunes_disjoint_driver():
+    # mid[0] belongs to a's nibble; b's row does not touch it.
+    d = j("trace", BITS, "bits.mid[0]")["data"]
+    assert d["granularity"] == "bit"
+    assert [s for h in d["hops"] for s in h["signals"]] == ["bits.a"]
+
+
+def test_trace_bit_select_widens_arithmetic():
+    # w = a + b has no bit correspondence, so w[3] names whole a and b.
+    d = j("trace", BITS, "bits.w[3]")["data"]
+    assert d["granularity"] == "bit"
+    assert {"bits.a", "bits.b"} <= {s for h in d["hops"] for s in h["signals"]}
+    widened = {s for h in d["hops"] for s in h.get("widened_far", [])}
+    assert {"bits.a", "bits.b"} <= widened
+    assert all(h["far_windows"].get(s) is None
+               for h in d["hops"] for s in h["signals"])
+
+
+def test_trace_bit_select_load_maps_window():
+    # a[0] is read exactly into mid[0] and without correspondence into w.
+    d = j("trace", BITS, "bits.a[0]", "--load")["data"]
+    assert d["direction"] == "load"
+    assert d["granularity"] == "bit"
+    by_sig = {s: h for h in d["hops"] for s in h["signals"]}
+    assert by_sig["bits.mid"]["far_windows"]["bits.mid"] == [0, 0]
+    assert by_sig["bits.w"]["far_windows"]["bits.w"] is None
+    assert "bits.w" in by_sig["bits.w"]["widened_far"]
+
+
 def test_trace_bad_select():
     code, _, _ = run("trace", DB, "top.q[99]")
     assert code == 1

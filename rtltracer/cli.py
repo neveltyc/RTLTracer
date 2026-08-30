@@ -256,7 +256,14 @@ def _human(name: str, data: dict, summary: dict) -> str:
                 lines.append(field("via", c.dim(" → ".join(h["call_chain"]))))
             arrow = "from" if data["direction"] == "driver" else "to"
             for s in h.get("signals", []):
-                lines.append(field(arrow, c.cyan(s)))
+                if data.get("granularity") == "bit":
+                    if s in h.get("widened_far", []):
+                        lines.append(field(arrow, c.cyan(s) + c.dim("[*]") + "  " + c.yellow("precision widened"), hot=True))
+                    else:
+                        w = h.get("far_windows", {}).get(s)
+                        lines.append(field(arrow, c.cyan(s + (winbits(w) if w else ""))))
+                else:
+                    lines.append(field(arrow, c.cyan(s)))
             for s in h.get("unresolved", []):
                 lines.append(field("unresolved", c.cyan(s), hot=True))
         for i, p in enumerate(data.get("procedures", [])):

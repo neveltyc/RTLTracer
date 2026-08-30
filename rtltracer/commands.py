@@ -3,6 +3,7 @@ the renderer turns into terminal text or JSON; SQL stays in rtltracer/sql/."""
 from __future__ import annotations
 
 from rtltracer import sql
+from rtltracer.bits import SKIP, propagate
 from rtltracer.db import Db
 from rtltracer.resolve import ResolveError, resolve
 from rtltracer.source import Source, source_state
@@ -243,7 +244,30 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
             d = cur.execute(sql.load("trace_depkind"), {"dep_id": r["dep_id"]}).fetchone()
             dep_kind[r["dep_id"]] = d["dep_kind"] if d else None
 
+    # Bit mode: carry the requested window across each arc. SKIP rows feed
+    # other bits (filtered out); None widens the far end to the whole net.
+    bit_mode = sig.window is not None
+    arc_result: dict[int, object] = {}
+    if bit_mode:
+        for i, row in enumerate(raw):
+            dk = dep_kind.get(row.get("dep_id"))
+            if dk == "control":                       # a condition is not bit-mappable
+                arc_result[i] = None
+                continue
+            if not load:
+                other_lo, other_hi, other_ex = row.get("driver_lo"), row.get("driver_hi"), row.get("driver_exact")
+            else:
+                other_lo, other_hi, other_ex = row.get("load_lo"), row.get("load_hi"), row.get("load_exact")
+            arc_result[i] = propagate(
+                sig.window,
+                row.get("signal_lo"), row.get("signal_hi"), row.get("signal_exact"),
+                other_lo, other_hi, other_ex, row.get("map_exact"))
+
     for index, row in enumerate(raw):
+        # Bit mode: an arc that does not touch the requested window feeds
+        # other bits and is filtered out of the answer entirely.
+        if bit_mode and arc_result[index] is SKIP:
+            continue
         kind = row["driver_kind"] if not load else row["load_kind"]
         dk = dep_kind.get(row.get("dep_id"))
         key = _provenance(row, index, dk)
@@ -252,10 +276,22 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         far_ref = row["driver_ref"] if not load else row["load_ref"]
         if far_net is not None:
             far_ids.add(far_net)
+        if bit_mode:
+            res = arc_result[index]
+            far_window = None if res is None else res     # None = widened whole
+            # A condition gates the whole statement; it is not a value
+            # mapping, so it is never "precision widened".
+            far_widened = res is None and dk != "control"
+        else:
+            far_window, far_widened = None, False
 
         if existing is not None:
             if far_net is not None:
                 existing["signals"].add(far_net)
+                if bit_mode:
+                    existing["_far_windows"][far_net] = far_window
+                    if far_widened:
+                        existing["_widened_far"].add(far_net)
             elif far_ref:
                 existing["unresolved"].add(far_ref)
             continue
@@ -318,8 +354,15 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
             "unreachable": unreachable,
             "call_chain": call_chain,
         }
+        if bit_mode:
+            hop["_far_windows"] = {}
+            hop["_widened_far"] = set()
         if far_net is not None:
             hop["signals"].add(far_net)
+            if bit_mode:
+                hop["_far_windows"][far_net] = far_window
+                if far_widened:
+                    hop["_widened_far"].add(far_net)
         elif far_ref:
             hop["unresolved"].add(far_ref)
         hops.append(hop)
@@ -328,6 +371,15 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
     for h in hops:
         h["signals"] = sorted(names.get(n, f"<net {n}>") for n in h["signals"])
         h["unresolved"] = sorted(h["unresolved"])
+        if bit_mode:
+            h["far_windows"] = {
+                names.get(n, f"<net {n}>"): (list(w) if w else None)
+                for n, w in h["_far_windows"].items()
+            }
+            h["widened_far"] = sorted(
+                names.get(n, f"<net {n}>") for n in h["_widened_far"])
+            h.pop("_far_windows", None)
+            h.pop("_widened_far", None)
         h.pop("_key", None)
 
     structural = [h for h in hops if h["kind"] not in ("alias", "control")]
@@ -340,6 +392,8 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
     data = {
         "signal": sig.full_path,
         "direction": "load" if load else "driver",
+        "granularity": "bit" if sig.window else "net",
+        "start_window": list(sig.window) if sig.window else None,
         "bits": sig.spell,
         "width": sig.width,
         "status": status,
