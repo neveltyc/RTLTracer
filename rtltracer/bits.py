@@ -37,3 +37,50 @@ def propagate(window, near_lo, near_hi, far_lo, far_hi, map_kind):
     if near_lo is None and far_lo is None:
         return overlap                      # whole to whole, offset-preserving
     return None                             # mixed whole/partial: widen
+
+
+def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Merge overlapping or adjacent [lo, hi] intervals into a canonical set."""
+    out: list[tuple[int, int]] = []
+    for lo, hi in sorted(intervals):
+        if out and lo <= out[-1][1] + 1:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    return out
+
+
+def subtract(window: tuple[int, int], covered: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Parts of `window` not already covered (covered is sorted and merged)."""
+    lo, hi = window
+    parts, cur = [], lo
+    for ilo, ihi in covered:
+        if ihi < cur:
+            continue
+        if ilo > hi:
+            break
+        if ilo > cur:
+            parts.append((cur, min(ilo - 1, hi)))
+        cur = max(cur, ihi + 1)
+        if cur > hi:
+            break
+    if cur <= hi:
+        parts.append((cur, hi))
+    return parts
+
+
+def uncovered(covered: dict, key, window: tuple[int, int] | None) -> list:
+    """Mark `window` walked for `key`; return the parts not already walked
+    (each None for the whole net, or a (lo, hi) range). [] if nothing is new."""
+    cur = covered.get(key)
+    if cur == "WHOLE":
+        return []
+    if window is None:
+        covered[key] = "WHOLE"
+        return [None]
+    intervals = cur or []
+    parts = subtract(window, intervals)
+    if not parts:
+        return []
+    covered[key] = merge_intervals(intervals + [window])
+    return parts

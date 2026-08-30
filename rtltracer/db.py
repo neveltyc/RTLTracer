@@ -45,3 +45,12 @@ def open_db(path: str) -> Db:
             f"schema v{version} is not readable; this build reads v{SCHEMA_VERSION}. Re-export the RTL with a matching rtl-designdb.",
         )
     return db
+
+
+def net_names(cursor, net_ids) -> dict[int, str]:
+    """Batch net-id -> full-path lookup for result assembly."""
+    ids = sorted(set(net_ids))
+    if not ids:
+        return {}
+    text, values = sql.fill("net_names", ids)
+    return {r["net_id"]: r["full_path"] for r in cursor.execute(text, values)}

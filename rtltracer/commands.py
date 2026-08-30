@@ -257,6 +257,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
     procedures: list[dict] = []
     proc_index: dict[int, int] = {}
     far_ids = set()
+    stmt_cache: dict[int, dict] = {}
     raw = [dict(r) for r in rows]
 
     # Serve every hop's scope from one whole-tree read (see node_paths.sql),
@@ -268,41 +269,31 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
                               for r in cur.execute(sql.load("node_paths")))
         return node_paths.get(node_id)
 
-    # dep kinds (only meaningful on dataflow rows; v_load folds control deps
-    # into dataflow, so the kind is looked up per dep_id)
-    dep_kind: dict[int, str | None] = {}
-    for r in raw:
-        if r.get("dep_id") is not None and r["dep_id"] not in dep_kind:
-            d = cur.execute(sql.load("trace_depkind"), {"dep_id": r["dep_id"]}).fetchone()
-            dep_kind[r["dep_id"]] = d["dep_kind"] if d else None
-
     # Bit mode: carry the requested window across each arc. SKIP rows feed
     # other bits (filtered out); None widens the far end to the whole net.
+    # Control rows are gated the same way: they carry no bit correspondence.
     bit_mode = sig.window is not None
     arc_result: dict[int, object] = {}
     if bit_mode:
         for i, row in enumerate(raw):
-            dk = dep_kind.get(row.get("dep_id"))
-            if dk == "control":
+            if row["dep_kind"] == "control":
                 arc_result[i] = None
                 continue
-            near_lo, near_hi = row.get("signal_lo"), row.get("signal_hi")
-            far_lo = row.get("driver_lo") if not load else row.get("load_lo")
-            far_hi = row.get("driver_hi") if not load else row.get("load_hi")
-            map_kind = _trace_map_kind(row, load)
-            arc_result[i] = propagate(sig.window, near_lo, near_hi, far_lo, far_hi, map_kind)
-
+            arc_result[i] = propagate(sig.window,
+                                      row["near_lo"], row["near_hi"],
+                                      row["far_lo"], row["far_hi"],
+                                      row["map_kind"])
     for index, row in enumerate(raw):
         # Bit mode: an arc that does not touch the requested window feeds
         # other bits and is filtered out of the answer entirely.
         if bit_mode and arc_result[index] is SKIP:
             continue
-        kind = row["driver_kind"] if not load else row["load_kind"]
-        dk = dep_kind.get(row.get("dep_id"))
+        kind = row["kind"]
+        dk = row["dep_kind"]
         key = _provenance(row, index, dk)
         existing = next((h for h in hops if h["_key"] == key), None)
-        far_net = row["driver_net_id"] if not load else row["load_net_id"]
-        far_ref = row["driver_ref"] if not load else row["load_ref"]
+        far_net = row["far_net_id"]
+        far_ref = row["far_ref"]
         if far_net is not None:
             far_ids.add(far_net)
         if bit_mode:
@@ -326,10 +317,13 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
                 existing["unresolved"].add(far_ref)
             continue
 
-        stmt = None
+        stmt_dict = None
         if row.get("stmt_id") is not None:
-            stmt = cur.execute(sql.load("trace_stmt"), {"stmt_id": row["stmt_id"]}).fetchone()
-        stmt_dict = dict(stmt) if stmt else None
+            if row["stmt_id"] not in stmt_cache:
+                matches = cur.execute(sql.fill("trace_stmt", [row["stmt_id"]])[0],
+                                      [row["stmt_id"]]).fetchall()
+                stmt_cache.update({r["stmt_id"]: dict(r) for r in matches})
+            stmt_dict = stmt_cache.get(row["stmt_id"])
         file_path = stmt_dict["file_path"] if stmt_dict and stmt_dict["file_path"] else row.get("file_path")
         line = stmt_dict["src_line"] if stmt_dict and stmt_dict["src_line"] else row.get("src_line")
         statement, source_state = source.line(file_path, line) if file_path else (None, "missing")

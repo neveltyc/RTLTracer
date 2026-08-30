@@ -464,10 +464,10 @@ def test_path_comb_state_as_source_consistent():
     con.row_factory = sqlite3.Row
     cur = con.cursor()
     facts = Facts(clocked={1}, latch=set(), dead=set(),
-                  call_parent={}, body_local=set(), stmt_branch={})
+                  call_parent={}, body_local=set())
     # bits.a (net 1) treated as a flop output driving mid -> y combinationally.
-    fwd, _ = _path_bfs(cur, facts, 1, 3, None, None, "forward", comb=True)
-    rev, _ = _path_bfs(cur, facts, 3, 1, (0, 0), None, "reverse", comb=True)
+    fwd, _ = _path_bfs(cur, facts, 1, 3, None, None, "forward", 0, {1})
+    rev, _ = _path_bfs(cur, facts, 3, 1, (0, 0), None, "reverse", 0, {1})
     assert fwd is not None
     assert rev is not None
 

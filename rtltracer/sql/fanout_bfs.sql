@@ -1,18 +1,16 @@
 -- cone (BFS engine): reading arcs of a set of nets, one batch per walk
--- level. {nets} is expanded by the wrapper to ?,?,...; the point query
--- itself seeks the edge view's source index, so the closure stays
--- index-fast.
+-- level. The view is presented traversal-oriented: the frontier net is
+-- `near`, the edge leads `near -> far`.
 SELECT d.edge_source,
        d.edge_id,
-       d.src_net_id,
-       d.dst_net_id,
-       d.src_lo, d.src_hi,
-       d.dst_lo, d.dst_hi,
+       d.src_net_id, d.dst_net_id,
+       d.src_net_id AS near_net_id, d.dst_net_id AS far_net_id,
+       d.src_lo AS near_lo, d.src_hi AS near_hi,
+       d.dst_lo AS far_lo, d.dst_hi AS far_hi,
        d.map_kind, d.edge_kind,
-       d.dep_id, d.conn_arc_id, d.stmt_id, d.branch_id,
-       d.call_site_id, d.prim_id,
-       d.file_path, d.src_line, d.src_col
+       d.dep_id, d.stmt_id, d.branch_id,
+       d.call_site_id,
+       d.file_path, d.src_line
 FROM v_trace_edge d
 WHERE d.src_net_id IN ({nets})
   AND d.dst_net_id IS NOT NULL
-  AND (? = 0 OR d.edge_kind <> 'control')
