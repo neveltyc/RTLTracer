@@ -641,6 +641,166 @@ def test_offset_select_out_of_range():
     assert j("trace", BITS, "bits.y@[99]")["errors"][0]["code"] == "BAD_SELECT"
 
 
+# --- rebind + source-availability warnings ---------------------------------
+
+_SEAL_DDL = (
+    "CREATE TABLE v_db_info(schema_version INT, tool TEXT, tool_version TEXT, "
+    "slang_version TEXT, producer_revision TEXT, top TEXT, analysis_status TEXT, "
+    "error_count INT, unresolved_count INT, empty_procedure_count INT, "
+    "duplicate_path_count INT, recursion_count INT, truncated_call_count INT, "
+    "checker_inst_count INT, unanalysed_inst_count INT, config_digest TEXT)")
+
+
+def _rebindable_db(path: Path, src_file_path: str, digest: str) -> None:
+    """A minimal database rebind can open: a v22 seal plus one file/src_file."""
+    con = sqlite3.connect(path)
+    con.execute(_SEAL_DDL)
+    con.execute("INSERT INTO v_db_info(schema_version) VALUES (22)")
+    con.execute("CREATE TABLE file(id INTEGER PRIMARY KEY, path TEXT, src_file_id INTEGER)")
+    con.execute("CREATE TABLE src_file(id INTEGER PRIMARY KEY, path TEXT, digest TEXT)")
+    con.execute("INSERT INTO src_file VALUES (1, ?, ?)", (src_file_path, digest))
+    con.execute("INSERT INTO file VALUES (1, ?, 1)", (src_file_path,))
+    con.commit()
+    con.close()
+
+
+def _src_path(db: Path) -> str:
+    con = sqlite3.connect(db)
+    row = con.execute("SELECT path FROM src_file").fetchone()
+    con.close()
+    return row[0]
+
+
+def test_rebind_rewrites_path_by_content_hash():
+    import hashlib
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        root.mkdir()
+        f = root / "mod.sv"
+        f.write_text("module m; endmodule\n", encoding="utf-8")
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()
+        db = Path(tmp) / "d.db"
+        _rebindable_db(db, "/gone/mod.sv", digest)
+        d = j("rebind", str(db), "--src-root", str(root))
+        assert d["summary"]["matched"] == 1 and d["summary"]["resolved"] is True
+        new_path = _src_path(db)
+        assert Path(new_path).is_absolute() and Path(new_path).exists()
+        assert hashlib.sha256(Path(new_path).read_bytes()).hexdigest() == digest
+
+
+def test_rebind_matches_windows_stored_path():
+    import hashlib
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        root.mkdir()
+        f = root / "mod.sv"
+        f.write_text("module m; endmodule\n", encoding="utf-8")
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()
+        db = Path(tmp) / "d.db"
+        _rebindable_db(db, r"C:\proj\src\mod.sv", digest)  # export machine path
+        d = j("rebind", str(db), "--src-root", str(root))
+        assert d["summary"]["matched"] == 1 and d["summary"]["resolved"] is True
+        assert d["data"]["files"][0]["basename"] == "mod.sv"
+        assert Path(_src_path(db)).exists()
+
+
+def test_rebind_skips_same_name_different_content():
+    import hashlib
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        root.mkdir()
+        (root / "mod.sv").write_text("different bytes\n", encoding="utf-8")
+        digest = hashlib.sha256(b"the original bytes\n").hexdigest()
+        db = Path(tmp) / "d.db"
+        _rebindable_db(db, "/gone/mod.sv", digest)
+        d = j("rebind", str(db), "--src-root", str(root))
+        assert d["summary"]["matched"] == 0 and d["summary"]["resolved"] is False
+        assert _src_path(db) == "/gone/mod.sv"  # kept, never NULL
+
+
+def test_rebind_is_idempotent():
+    import hashlib
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "root"
+        root.mkdir()
+        f = root / "mod.sv"
+        f.write_text("x\n", encoding="utf-8")
+        digest = hashlib.sha256(f.read_bytes()).hexdigest()
+        db = Path(tmp) / "d.db"
+        _rebindable_db(db, "/gone/mod.sv", digest)
+        d1 = j("rebind", str(db), "--src-root", str(root))
+        p1 = _src_path(db)
+        d2 = j("rebind", str(db), "--src-root", str(root))
+        p2 = _src_path(db)
+        assert p1 == p2
+        assert d1["summary"]["matched"] == d2["summary"]["matched"] == 1
+
+
+def test_rebind_bad_root_exits_one():
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "d.db"
+        _rebindable_db(db, "/gone/mod.sv", "0" * 64)
+        missing = str(Path(tmp) / "nope")
+        code, _, _ = run("rebind", str(db), "--src-root", missing)
+        assert code == 1
+        assert j("rebind", str(db), "--src-root", missing)["errors"][0]["code"] == "REBIND_BAD_ROOT"
+
+
+def test_trace_warns_on_stale_source_at_top():
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "s.db"
+        shutil.copyfile(DB, db)
+        con = sqlite3.connect(db)
+        con.execute("UPDATE src_file SET digest = ?", ("0" * 64,))
+        con.commit()
+        con.close()
+        code, out, _ = run("trace", str(db), "top.q")
+        assert code == 0
+        first = out.splitlines()[0]
+        assert first.startswith("warning: ") and "changed since export" in first
+        assert "run the `rebind` subcommand" in out
+        d = j("trace", str(db), "top.q")
+        assert "SOURCE_STALE" in [x["code"] for x in d["diagnostics"]]
+        # results still produced; stale hops give location only, never quoted text
+        assert d["data"]["hops"]
+        assert all(h["statement"] is None for h in d["data"]["hops"] if h["source"] == "stale")
+        assert any(h.get("file") and h.get("line") for h in d["data"]["hops"])
+
+
+def test_trace_warns_on_missing_source_at_top():
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "s.db"
+        shutil.copyfile(DB, db)
+        con = sqlite3.connect(db)
+        con.execute("UPDATE src_file SET path = '/gone/x.sv'")
+        con.execute("UPDATE file SET path = '/gone/x.sv'")
+        con.commit()
+        con.close()
+        code, out, _ = run("trace", str(db), "top.q")
+        assert code == 0
+        first = out.splitlines()[0]
+        assert first.startswith("warning: ") and "not found" in first
+        assert "if the source is available" in out
+        d = j("trace", str(db), "top.q")
+        assert "SOURCE_MISSING" in [x["code"] for x in d["diagnostics"]]
+
+
+def test_info_stale_shows_remediation():
+    import shutil
+    with tempfile.TemporaryDirectory() as tmp:
+        db = Path(tmp) / "s.db"
+        shutil.copyfile(DB, db)
+        con = sqlite3.connect(db)
+        con.execute("UPDATE src_file SET digest = ?", ("0" * 64,))
+        con.commit()
+        con.close()
+        code, out, _ = run("info", str(db))
+        assert code == 0 and "restore the original source" in out
+        assert j("info", str(db))["summary"]["sources_stale"] >= 1
+
+
 def _run_standalone() -> int:
     tests = [(n, f) for n, f in sorted(globals().items())
              if n.startswith("test_") and callable(f)]

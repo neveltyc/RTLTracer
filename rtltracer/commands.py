@@ -6,7 +6,7 @@ from rtltracer.sql import sql
 from rtltracer.bits import SKIP, merge_intervals, propagate
 from rtltracer.db import Db, net_names
 from rtltracer.resolve import ResolveError, resolve
-from rtltracer.source import Source, source_state
+from rtltracer.source import Source, source_diagnostics, source_state
 
 
 def _plural(n: int, word: str) -> str:
@@ -391,4 +391,4 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         "procedures": procedures,
     }
     summary = {"status": status, "hops": len(hops), "structural_hops": len(structural)}
-    return {"data": data, "summary": summary, "diagnostics": []}
+    return {"data": data, "summary": summary, "diagnostics": source_diagnostics(source)}

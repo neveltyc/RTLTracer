@@ -13,7 +13,7 @@ from rtltracer.sql import sql
 from rtltracer.bits import SKIP, propagate, uncovered
 from rtltracer.db import Db, net_names
 from rtltracer.resolve import resolve
-from rtltracer.source import Source
+from rtltracer.source import Source, source_diagnostics
 
 FOLLOW_ALL = -1
 
@@ -161,7 +161,7 @@ def cone_walk(cursor, db: Db, signal: str, direction: str, depth: int,
     raw = _cone_bfs(cursor, facts, bfs_name, sig.net_id,
                     _ctl_left(ctl_depth, follow_ctl), _stop_nets(facts, comb, through_latch),
                     depth, sig.window)
-    edges, nodes = _name_edges(cursor, raw, direction)
+    edges, nodes, src_reader = _name_edges(cursor, raw, direction)
     data = {
         "start": sig.full_path,
         "direction": direction,
@@ -183,7 +183,7 @@ def cone_walk(cursor, db: Db, signal: str, direction: str, depth: int,
         "max_depth_reached": max((e["depth"] for e in edges), default=0),
         "control_edges": sum(1 for e in edges if e["control"]),
     }
-    return {"data": data, "summary": summary, "diagnostics": []}
+    return {"data": data, "summary": summary, "diagnostics": source_diagnostics(src_reader)}
 
 
 def _name_edges(cursor, raw: list[dict], direction: str):
@@ -230,7 +230,7 @@ def _name_edges(cursor, raw: list[dict], direction: str):
             depth_map.setdefault(e["target"], e["depth"])
     nodes = [{"path": n, "depth": d}
              for n, d in sorted(depth_map.items(), key=lambda kv: (kv[1], kv[0]))]
-    return edges, nodes
+    return edges, nodes, src_reader
 
 
 def _goal_matches(net_id: int, window: tuple[int, int] | None,
@@ -346,6 +346,7 @@ def cone_path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
         trail[0] = (trail[0][0], trail[0][1], None)
     edges = []
     nodes = []
+    diagnostics: list[dict] = []
     if found:
         net_seq = [n for n, _, _ in trail]
         names = net_names(cur, net_seq)
@@ -366,6 +367,7 @@ def cone_path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
                 "line": line,
                 "statement": src_reader.line(file_path, line)[0] if file_path and line else None,
             })
+        diagnostics = source_diagnostics(src_reader)
     reason = "bit_precision_lost" if precision_lost and not found else None
     data = {
         "from": f.full_path,
@@ -382,4 +384,4 @@ def cone_path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
     summary = {"found": found, "length": len(trail) - 1 if found else 0}
     if reason:
         summary["reason"] = reason
-    return {"data": data, "summary": summary, "diagnostics": []}
+    return {"data": data, "summary": summary, "diagnostics": diagnostics}

@@ -7,6 +7,14 @@ from pathlib import Path
 
 from rtltracer.sql import sql
 
+# Remediation lines shared by the top-of-output warnings and info's source
+# summary, so the two never drift. rebind restores the index, not the content:
+# stale source must be restored first, missing source found first.
+REMEDY_STALE = ("restore the original source, then run the `rebind` subcommand "
+                "to restore the index.")
+REMEDY_MISSING = ("if the source is available, run the `rebind` subcommand to "
+                  "restore the index.")
+
 
 def _candidate_paths(src: str, file_path: str) -> list[str]:
     """Paths to try when quoting source, in priority order. The recorded
@@ -75,3 +83,36 @@ class Source:
                     continue
             self._lines[file_path] = lines
         return self._lines[file_path]
+
+    def state_counts(self) -> dict[str, int]:
+        """Distinct stale / missing source files referenced so far. Keyed by
+        file_path, so each file counts once however many hops touched it."""
+        stale = missing = 0
+        for _src, _digest, state in self._state.values():
+            stale += state == "stale"
+            missing += state == "missing"
+        return {"stale": stale, "missing": missing}
+
+
+def source_diagnostics(source: Source) -> list[dict]:
+    """Aggregate warnings for the stale / missing source a command referenced.
+    Reported once with a count, not per file — info lists the files."""
+    counts = source.state_counts()
+    diagnostics = []
+    if counts["stale"]:
+        n = counts["stale"]
+        diagnostics.append({
+            "severity": "warning",
+            "code": "SOURCE_STALE",
+            "message": f"{n} source file{'' if n == 1 else 's'} changed since export; "
+                       f"results below are based on stale source.\n{REMEDY_STALE}",
+        })
+    if counts["missing"]:
+        n = counts["missing"]
+        diagnostics.append({
+            "severity": "warning",
+            "code": "SOURCE_MISSING",
+            "message": f"{n} source file{'' if n == 1 else 's'} not found; "
+                       f"source lines shown as locations only.\n{REMEDY_MISSING}",
+        })
+    return diagnostics

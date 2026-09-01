@@ -10,6 +10,7 @@ Commands:
   fanin  DB SIGNAL           Everything driving it, transitively
   fanout DB SIGNAL           Everything it drives, transitively
   path   DB FROM TO          Shortest route between two signals
+  rebind DB --src-root DIR   Re-point source files by content hash
 
 Run 'rtltracer <command> --help' for per-command options.
 """
@@ -26,7 +27,9 @@ from rtltracer import __version__
 from rtltracer.db import DbError, open_db
 from rtltracer.commands import info, tree, find, trace
 from rtltracer.cone import cone_walk, cone_path
+from rtltracer.rebind import rebind
 from rtltracer.resolve import ResolveError
+from rtltracer.source import REMEDY_MISSING, REMEDY_STALE
 
 TOOL = "rtltracer"
 
@@ -39,9 +42,11 @@ commands (each takes DB, the design database):
   fanin   DB SIGNAL       everything driving it, transitively
   fanout  DB SIGNAL       everything it drives, transitively
   path    DB FROM TO      shortest driver route between two signals
+  rebind  DB              re-point source files by content hash (see --src-root)
 
 options by command:
   --json                        JSON instead of human text (any command)
+  rebind  --src-root DIR        source tree to scan (repeatable); required
   tree    --depth N (0=all)     --limit N (0=all)
   find    --instances|--modules match instances or modules instead of nets
           --limit N (0=all)
@@ -115,13 +120,24 @@ def _result(name: str, args: dict, outcome, json_mode: bool):
         out = _envelope(name, args, "ok", data, summary, diagnostics, [])
         sys.stdout.write(out)
         return 0
-    # Human text
+    # Human text: warnings sit at the top, where they are seen before the result.
+    sys.stdout.write(_render_warnings(diagnostics, _Ink(sys.stdout)))
     sys.stdout.write(_human(name, data, summary))
-    e = _Ink(sys.stderr)
-    for d in diagnostics:
-        if d.get("severity") == "warning":
-            print(f"{e.yellow('warning:')} {d['message']}", file=sys.stderr)
     return 0
+
+
+def _render_warnings(diagnostics: list, c: _Ink) -> str:
+    warns = [d for d in diagnostics if d.get("severity") == "warning"]
+    if not warns:
+        return ""
+    indent = " " * len("warning: ")
+    lines = []
+    for d in warns:
+        head, *rest = d["message"].split("\n")
+        lines.append(c.yellow(f"warning: {head}"))
+        lines.extend(c.yellow(indent + r) for r in rest)
+    lines.append("")  # blank line before the result body
+    return "\n".join(lines) + "\n"
 
 
 def _emit_error(msg: str):
@@ -177,6 +193,10 @@ def _human(name: str, data: dict, summary: dict) -> str:
         for s in data["sources"]:
             if s["state"] in ("stale", "missing"):
                 lines.append(f"  {c.state(s['state'])}: {s['path']}")
+        if stale:
+            lines.append(c.yellow(f"  {REMEDY_STALE}"))
+        if missing:
+            lines.append(c.yellow(f"  {REMEDY_MISSING}"))
         lines.append("")
     elif name == "tree":
         levels = data["levels"]
@@ -332,6 +352,29 @@ def _human(name: str, data: dict, summary: dict) -> str:
             else:
                 lines.append(c.yellow("no path found"))
         lines.append("")
+    elif name == "rebind":
+        rebound = [f for f in data["files"] if f["rebound"]]
+        unmatched = [f for f in data["files"] if not f["rebound"]]
+        lines.append(f"scanned {plur(summary['roots'], 'root')}, "
+                     f"matched {summary['matched']}/{summary['total']} "
+                     "source files by content hash")
+        if rebound:
+            lines.append("")
+            lines.append(f"rebound ({len(rebound)}):")
+            for f in rebound:
+                lines.append(f"  {c.cyan(f['basename'])}")
+        if unmatched:
+            lines.append("")
+            lines.append(c.yellow(f"unmatched ({len(unmatched)}, kept old path):"))
+            for f in unmatched:
+                lines.append(f"  {c.yellow(f['basename'])}")
+        lines.append("")
+        if summary["resolved"]:
+            lines.append(f"resolved: {c.green('yes')}")
+        else:
+            lines.append(f"resolved: {c.yellow('no')}  "
+                         f"({plur(summary['unmatched'], 'unmatched file')})")
+        lines.append("")
     lines.append(c.dim(f"  [{summary.get('_ms', 0)} ms]"))
     return "\n".join(lines) + "\n"
 
@@ -424,6 +467,11 @@ def main():
     pp.add_argument("to_signal", metavar="TO")
     pp.add_argument("--depth", type=int, default=0, metavar="N")
 
+    prb = cmd("rebind")
+    prb.add_argument("db", metavar="DB", type=Path)
+    prb.add_argument("--src-root", action="append", required=True, dest="src_root",
+                     metavar="DIR")
+
     args = p.parse_args()
     try:
         db = open_db(str(args.db))
@@ -462,6 +510,8 @@ def main():
             outcome = cone_path(db, args.from_signal, args.to_signal,
                                 args.depth, args.no_ctl, args.comb, args.through_latch,
                                 args.follow_ctl, args.ctl_depth, top)
+        elif cmd == "rebind":
+            outcome = rebind(db, args.src_root)
         else:
             raise DbError("BAD_COMMAND", f"unknown command: {cmd}")
         outcome["summary"]["_ms"] = int((time.perf_counter() - _t0) * 1000)

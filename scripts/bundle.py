@@ -17,7 +17,7 @@ PKG = ROOT / "rtltracer"
 OUT = ROOT / "dist" / "rtltracer.py"
 
 # Concatenation order = dependency order (each module uses only earlier ones).
-ORDER = ["__init__", "sql", "bits", "db", "source", "resolve", "cone", "commands", "cli"]
+ORDER = ["__init__", "sql", "bits", "db", "rebind", "source", "resolve", "cone", "commands", "cli"]
 
 
 def _split(src: str):

@@ -36,6 +36,7 @@ rtltracer trace design.db top.alu.result   # 谁驱动它（--load 反过来）
 rtltracer fanin design.db top.alu.result  # 它依赖什么，多层
 rtltracer fanout design.db top.clk        # 谁依赖它，多层
 rtltracer path design.db top.a top.out    # 两个信号之间有没有路
+rtltracer rebind design.db --src-root src  # 按内容 hash 重指源码路径
 ```
 
 信号路径可以直接用波形里的写法，测试台层级会自动丢弃：
@@ -70,6 +71,20 @@ rtltracer fanin design.db top.q --no-ctl       # 忽略条件信号
 rtltracer fanin design.db top.q --follow-ctl   # 跟着条件信号继续追
 rtltracer fanin design.db top.q --ctl-depth 2  # 条件信号只追 2 层
 ```
+
+## 源码搬家后：rebind
+
+库里 `src_file.path` 是导出机器上的绝对路径，分发、换机器或多根设计（工程 / PDK / IP 分处不同挂载点）后就失效，源码引用随之降级。库里同时存了每个文件的内容 SHA-256，`rebind` 用它按内容认领文件、重指路径：
+
+```bash
+rtltracer rebind design.db --src-root rtl --src-root third_party
+```
+
+给一个或多个 `--src-root`（可重复），它递归扫描、按内容 hash 匹配，只改写命中的 `src_file.path`（写绝对路径），未命中的保持原路径。输出报告哪些已恢复、哪些没恢复、是否已全部 resolve；加 `--json` 得到同一份结构化结果。
+
+`rebind` 只解决“索引丢了 / 指错了”，不解决“内容改了”：源码被改过的文件，除非别处仍有未改副本，否则匹配不上。改动是幂等的，重跑安全。
+
+trace / fanin / fanout / path 若引用到 stale（内容变了）或 missing（找不到）的源码，会在输出**顶部**给一条黄色 warning，并提示补救：stale 先恢复原码再 `rebind`，missing 找回源码后 `rebind`。源码不在位时只显示 `文件:行` 位置，不显示原文，结果照常产出。具体是哪些文件坏了，用 `info` 查看。
 
 ## 输出信息解读
 

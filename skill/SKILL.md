@@ -10,7 +10,7 @@ the terminal: who drives a signal, who reads it, its transitive fan-in/fan-out
 cone, and whether a path connects two signals — each answer carries the source
 `file:line`. It is a thin consumer over a **design database** produced by
 [RTLDebugDBKit](https://github.com/neveltyc/RTLDebugDBKit); it never reads RTL
-itself. Seven commands, one SQLite input, no simulation. **Always pass `--json`
+itself. Eight commands, one SQLite input, no simulation. **Always pass `--json`
 from an agent.** This file covers driving the tool from an agent — see the repo
 README for the full reference.
 
@@ -77,9 +77,19 @@ User wants to know...
 │   └─ fanin     <DB> SIGNAL       full driver cone, multi-hop
 ├─ "What does it drive, transitively?"
 │   └─ fanout    <DB> SIGNAL       full load cone, multi-hop
-└─ "Is there a route from A to B?"
-    └─ path      <DB> FROM TO      shortest dependency path between two signals
+├─ "Is there a route from A to B?"
+│   └─ path      <DB> FROM TO      shortest dependency path between two signals
+└─ "Source paths broke after moving the DB?"
+    └─ rebind    <DB> --src-root DIR   re-point src_file paths by content hash
 ```
+
+`rebind` is a maintenance write (it edits `src_file.path` in place); the query
+commands are read-only. If trace/fanin/fanout/path report stale or missing
+source (a top-level `SOURCE_STALE` / `SOURCE_MISSING` diagnostic), point `rebind`
+at the source tree(s) with one or more `--src-root DIR` to restore the index by
+content SHA-256, then re-run. It supports `--json` and reports which files were
+rebound, which were not, and whether all are `resolved`. It fixes a lost/wrong
+index, not changed content — a file whose bytes changed will not match.
 
 ## Signal names & bit-select
 
@@ -129,6 +139,12 @@ User wants to know...
 | `fanin` | `rtltracer --json fanin <DB> SIGNAL [--depth N]` | `start`, `nodes[]`, `edges[].source`/`.target`/`.kind`/`.depth`/`.control`/`.file`/`.line`/`.statement`; summary `control_edges`/`stopped_at_state` |
 | `fanout` | `rtltracer --json fanout <DB> SIGNAL [--depth N]` | same shape as `fanin` |
 | `path` | `rtltracer --json path <DB> FROM TO` | `found` (bool), `length`, `reason` (`bit_precision_lost` when a bit path was lost), `nodes[]`, `edges[]` |
+| `rebind` | `rtltracer --json rebind <DB> --src-root DIR [--src-root DIR ...]` | `files[].basename`/`.rebound`/`.old_path`/`.new_path`; summary `matched`/`rebound`/`unmatched`/`resolved` |
+
+Source-availability signal: trace/fanin/fanout/path emit a `diagnostics` warning
+(`SOURCE_STALE` / `SOURCE_MISSING`) when referenced source no longer matches the
+recorded digest; results are still produced but non-current source shows
+`file:line` only, no quoted text. `rebind` restores the index (see above).
 
 `trace.status` / `fanin`/`fanout` edges tell you where the walk ended:
 
