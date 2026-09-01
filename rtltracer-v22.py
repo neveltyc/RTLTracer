@@ -1631,6 +1631,13 @@ def _resolve_opt(v: str | None, default=""):
 
 
 def main():
+    # 罫線・記号は常に UTF-8 で出す。既定では stdout がロケール依存
+    # (中文 Windows は cp936) となり ├── が GBK バイトで化ける。
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8")
+
     p = argparse.ArgumentParser(
         prog=TOOL, formatter_class=argparse.RawDescriptionHelpFormatter,
         usage="%(prog)s [-h] [-V] COMMAND [ARGS]",
