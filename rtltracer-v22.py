@@ -63,6 +63,8 @@ sql = _Sql({
     'node_by_id': "-- resolve: a tree node's instance, by node id.\nSELECT node_id, inst_id\nFROM v_tree_node\nWHERE node_id = :node_id\n",
     'node_by_path': '-- tree: a tree level by its assembled path, when the scope is not a net.\nSELECT node_id, node_path\nFROM v_node_path\nWHERE node_path = :node_path\n',
     'node_paths': "-- trace: every node's assembled path. v_node_path walks the whole tree per\n-- query, so it is taken once and kept, never looked up per hop.\nSELECT node_id, node_path\nFROM v_node_path\n",
+    'rebind_src_files': '-- rebind: every source file the export recorded, by id, with its stored path\n-- and content digest. The wrapper re-points path to a file that still hashes\n-- to digest.\nSELECT id, path, digest FROM src_file ORDER BY path;\n',
+    'rebind_update': '-- rebind: re-point one source file to a path whose content matches its digest.\nUPDATE src_file SET path = :path WHERE id = :id;\n',
     'state_elements': "-- cone: state elements — nets a combinational walk stops at, with\n-- propagation across whole-width port ties.\n--\n-- Base set: nonblocking writes in an edge-sensitive procedure (clocked)\n-- and writes in always_latch (latch). Then the property is carried across\n-- every whole-width connection arc (src_lo/dst_lo both NULL): a flop's\n-- output wired whole to a port makes the far net a state element too.\n-- Half-width ties do not propagate.\n--\n-- Returns one row per state net: net_id + state_kind ('clocked'|'latch').\nWITH state_kind(net_id, kind) AS (\n    SELECT DISTINCT d.tgt_net_id,\n           CASE WHEN p.proc_kind = 'always_latch' THEN 'latch' ELSE 'clocked' END\n    FROM net_dep d\n    JOIN stmt s ON s.id = d.stmt_id\n    JOIN proc p ON p.id = s.proc_id\n    WHERE d.dep_kind = 'data'\n      AND (p.proc_kind = 'always_latch'\n           OR (s.assign_kind = 'nonblocking'\n               AND (p.proc_kind = 'always_ff'\n                    OR (p.proc_kind = 'always' AND EXISTS(\n                          SELECT 1 FROM proc_event e\n                          WHERE e.proc_id = p.id\n                            AND e.event_kind = 'sensitivity'\n                            AND e.edge_kind IS NOT NULL)))))\n),\nprop(net_id, kind) AS (\n    SELECT net_id, kind FROM state_kind\n  UNION\n    SELECT d.dst_net_id, p.kind\n    FROM prop p\n    JOIN v_trace_edge d ON d.src_net_id = p.net_id\n    WHERE d.edge_kind = 'connection'\n      AND d.src_lo IS NULL AND d.dst_lo IS NULL\n  UNION\n    SELECT d.src_net_id, p.kind\n    FROM prop p\n    JOIN v_trace_edge d ON d.dst_net_id = p.net_id\n    WHERE d.edge_kind = 'connection'\n      AND d.src_lo IS NULL AND d.dst_lo IS NULL\n)\nSELECT DISTINCT net_id, kind FROM prop\n",
     'tops': "-- resolve: the elaborated top(s), in id order.\nSELECT t.node_id, t.node_name\nFROM v_tree_node t\nWHERE t.node_kind = 'root'\nORDER BY t.node_id;\n",
     'trace_calls': '-- trace: the call string a row belongs to. Walked up parent_call_site_id\n-- by the wrapper; depth is small.\nSELECT call_site_id, parent_call_site_id, subroutine_name, depth\nFROM v_call_site\nWHERE call_site_id = :call_site_id;\n',
@@ -211,7 +213,96 @@ def net_names(cursor, net_ids) -> dict[int, str]:
     text, values = sql.fill("net_names", ids)
     return {r["net_id"]: r["full_path"] for r in cursor.execute(text, values)}
 
+# --- rebind ----------------------------------------------------
+def _basename(path: str) -> str:
+    """Last component of a stored path. The recorded path is the export
+    machine's, so it may use Windows separators on a POSIX host; treat '\\' as a
+    separator too, matching source.py's candidate normalization."""
+    return path.replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def _digest(path: str) -> str | None:
+    try:
+        return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _index_roots(roots: list[str], wanted: set[str]) -> dict[str, str]:
+    """Map digest -> absolute path for every file under the roots whose basename
+    the database asks for. The basename prefilter keeps the walk from hashing an
+    entire tree; a digest seen twice keeps the first path."""
+    by_digest: dict[str, str] = {}
+    for root in roots:
+        for dirpath, _dirs, names in os.walk(root):
+            for name in names:
+                if name not in wanted:
+                    continue
+                full = os.path.join(dirpath, name)
+                digest = _digest(full)
+                if digest is not None:
+                    by_digest.setdefault(digest, str(Path(full).resolve()))
+    return by_digest
+
+
+def rebind(db: Db, src_roots: list[str]) -> dict:
+    for root in src_roots:
+        if not os.path.isdir(root):
+            raise DbError("REBIND_BAD_ROOT", f"--src-root '{root}' is not a directory")
+
+    cur = db.conn.cursor()
+    src_files = cur.execute(sql.load("rebind_src_files")).fetchall()
+    wanted = {_basename(r["path"]) for r in src_files}
+    by_digest = _index_roots(src_roots, wanted)
+
+    files = []
+    matched = 0
+    for r in src_files:
+        new_path = by_digest.get(r["digest"])
+        if new_path is not None:
+            cur.execute(sql.load("rebind_update"), {"path": new_path, "id": r["id"]})
+            matched += 1
+        files.append({
+            "basename": _basename(r["path"]),
+            "digest": r["digest"],
+            "old_path": r["path"],
+            "new_path": new_path,
+            "rebound": new_path is not None,
+        })
+    db.conn.commit()
+
+    total = len(src_files)
+    unmatched = total - matched
+    data = {"path": db.path, "roots": list(src_roots), "files": files}
+    summary = {
+        "roots": len(src_roots),
+        "total": total,
+        "matched": matched,
+        "rebound": matched,
+        "unmatched": unmatched,
+        "resolved": matched == total,
+    }
+    diagnostics = []
+    if unmatched:
+        n = unmatched
+        diagnostics.append({
+            "severity": "warning",
+            "code": "REBIND_UNMATCHED",
+            "message": f"{n} source file{'' if n == 1 else 's'} could not be matched "
+                       "by content hash and kept the old path.",
+        })
+    return {"data": data, "summary": summary, "diagnostics": diagnostics}
+
 # --- source ----------------------------------------------------
+# Remediation lines shared by the top-of-output warnings and info's source
+# summary, so the two never drift. rebind restores the index, not the content:
+# stale source must be restored first, missing source found first.
+REMEDY_STALE = ("restore the original source, then run the `rebind` subcommand "
+                "to restore the index.")
+REMEDY_MISSING = ("if the source is available, run the `rebind` subcommand to "
+                  "restore the index.")
+
+
 def _candidate_paths(src: str, file_path: str) -> list[str]:
     """Paths to try when quoting source, in priority order. The recorded
     src_path is machine-specific; file_path is portable, and normalizing its
@@ -279,6 +370,39 @@ class Source:
                     continue
             self._lines[file_path] = lines
         return self._lines[file_path]
+
+    def state_counts(self) -> dict[str, int]:
+        """Distinct stale / missing source files referenced so far. Keyed by
+        file_path, so each file counts once however many hops touched it."""
+        stale = missing = 0
+        for _src, _digest, state in self._state.values():
+            stale += state == "stale"
+            missing += state == "missing"
+        return {"stale": stale, "missing": missing}
+
+
+def source_diagnostics(source: Source) -> list[dict]:
+    """Aggregate warnings for the stale / missing source a command referenced.
+    Reported once with a count, not per file — info lists the files."""
+    counts = source.state_counts()
+    diagnostics = []
+    if counts["stale"]:
+        n = counts["stale"]
+        diagnostics.append({
+            "severity": "warning",
+            "code": "SOURCE_STALE",
+            "message": f"{n} source file{'' if n == 1 else 's'} changed since export; "
+                       f"results below are based on stale source.\n{REMEDY_STALE}",
+        })
+    if counts["missing"]:
+        n = counts["missing"]
+        diagnostics.append({
+            "severity": "warning",
+            "code": "SOURCE_MISSING",
+            "message": f"{n} source file{'' if n == 1 else 's'} not found; "
+                       f"source lines shown as locations only.\n{REMEDY_MISSING}",
+        })
+    return diagnostics
 
 # --- resolve ---------------------------------------------------
 _SEPS = {".", "/"}
@@ -709,7 +833,7 @@ def cone_walk(cursor, db: Db, signal: str, direction: str, depth: int,
     raw = _cone_bfs(cursor, facts, bfs_name, sig.net_id,
                     _ctl_left(ctl_depth, follow_ctl), _stop_nets(facts, comb, through_latch),
                     depth, sig.window)
-    edges, nodes = _name_edges(cursor, raw, direction)
+    edges, nodes, src_reader = _name_edges(cursor, raw, direction)
     data = {
         "start": sig.full_path,
         "direction": direction,
@@ -731,7 +855,7 @@ def cone_walk(cursor, db: Db, signal: str, direction: str, depth: int,
         "max_depth_reached": max((e["depth"] for e in edges), default=0),
         "control_edges": sum(1 for e in edges if e["control"]),
     }
-    return {"data": data, "summary": summary, "diagnostics": []}
+    return {"data": data, "summary": summary, "diagnostics": source_diagnostics(src_reader)}
 
 
 def _name_edges(cursor, raw: list[dict], direction: str):
@@ -778,7 +902,7 @@ def _name_edges(cursor, raw: list[dict], direction: str):
             depth_map.setdefault(e["target"], e["depth"])
     nodes = [{"path": n, "depth": d}
              for n, d in sorted(depth_map.items(), key=lambda kv: (kv[1], kv[0]))]
-    return edges, nodes
+    return edges, nodes, src_reader
 
 
 def _goal_matches(net_id: int, window: tuple[int, int] | None,
@@ -894,6 +1018,7 @@ def cone_path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
         trail[0] = (trail[0][0], trail[0][1], None)
     edges = []
     nodes = []
+    diagnostics: list[dict] = []
     if found:
         net_seq = [n for n, _, _ in trail]
         names = net_names(cur, net_seq)
@@ -914,6 +1039,7 @@ def cone_path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
                 "line": line,
                 "statement": src_reader.line(file_path, line)[0] if file_path and line else None,
             })
+        diagnostics = source_diagnostics(src_reader)
     reason = "bit_precision_lost" if precision_lost and not found else None
     data = {
         "from": f.full_path,
@@ -930,7 +1056,7 @@ def cone_path(db: Db, from_sig: str, to_sig: str, max_depth: int = 0,
     summary = {"found": found, "length": len(trail) - 1 if found else 0}
     if reason:
         summary["reason"] = reason
-    return {"data": data, "summary": summary, "diagnostics": []}
+    return {"data": data, "summary": summary, "diagnostics": diagnostics}
 
 # --- commands --------------------------------------------------
 def _plural(n: int, word: str) -> str:
@@ -1315,7 +1441,7 @@ def trace(db: Db, signal: str, load: bool = False, ctl: bool = False, top: str =
         "procedures": procedures,
     }
     summary = {"status": status, "hops": len(hops), "structural_hops": len(structural)}
-    return {"data": data, "summary": summary, "diagnostics": []}
+    return {"data": data, "summary": summary, "diagnostics": source_diagnostics(source)}
 
 # --- cli -------------------------------------------------------
 TOOL = "rtltracer"
@@ -1329,9 +1455,11 @@ commands (each takes DB, the design database):
   fanin   DB SIGNAL       everything driving it, transitively
   fanout  DB SIGNAL       everything it drives, transitively
   path    DB FROM TO      shortest driver route between two signals
+  rebind  DB              re-point source files by content hash (see --src-root)
 
 options by command:
   --json                        JSON instead of human text (any command)
+  rebind  --src-root DIR        source tree to scan (repeatable); required
   tree    --depth N (0=all)     --limit N (0=all)
   find    --instances|--modules match instances or modules instead of nets
           --limit N (0=all)
@@ -1405,13 +1533,24 @@ def _result(name: str, args: dict, outcome, json_mode: bool):
         out = _envelope(name, args, "ok", data, summary, diagnostics, [])
         sys.stdout.write(out)
         return 0
-    # Human text
+    # Human text: warnings sit at the top, where they are seen before the result.
+    sys.stdout.write(_render_warnings(diagnostics, _Ink(sys.stdout)))
     sys.stdout.write(_human(name, data, summary))
-    e = _Ink(sys.stderr)
-    for d in diagnostics:
-        if d.get("severity") == "warning":
-            print(f"{e.yellow('warning:')} {d['message']}", file=sys.stderr)
     return 0
+
+
+def _render_warnings(diagnostics: list, c: _Ink) -> str:
+    warns = [d for d in diagnostics if d.get("severity") == "warning"]
+    if not warns:
+        return ""
+    indent = " " * len("warning: ")
+    lines = []
+    for d in warns:
+        head, *rest = d["message"].split("\n")
+        lines.append(c.yellow(f"warning: {head}"))
+        lines.extend(c.yellow(indent + r) for r in rest)
+    lines.append("")  # blank line before the result body
+    return "\n".join(lines) + "\n"
 
 
 def _emit_error(msg: str):
@@ -1467,6 +1606,10 @@ def _human(name: str, data: dict, summary: dict) -> str:
         for s in data["sources"]:
             if s["state"] in ("stale", "missing"):
                 lines.append(f"  {c.state(s['state'])}: {s['path']}")
+        if stale:
+            lines.append(c.yellow(f"  {REMEDY_STALE}"))
+        if missing:
+            lines.append(c.yellow(f"  {REMEDY_MISSING}"))
         lines.append("")
     elif name == "tree":
         levels = data["levels"]
@@ -1622,6 +1765,29 @@ def _human(name: str, data: dict, summary: dict) -> str:
             else:
                 lines.append(c.yellow("no path found"))
         lines.append("")
+    elif name == "rebind":
+        rebound = [f for f in data["files"] if f["rebound"]]
+        unmatched = [f for f in data["files"] if not f["rebound"]]
+        lines.append(f"scanned {plur(summary['roots'], 'root')}, "
+                     f"matched {summary['matched']}/{summary['total']} "
+                     "source files by content hash")
+        if rebound:
+            lines.append("")
+            lines.append(f"rebound ({len(rebound)}):")
+            for f in rebound:
+                lines.append(f"  {c.cyan(f['basename'])}")
+        if unmatched:
+            lines.append("")
+            lines.append(c.yellow(f"unmatched ({len(unmatched)}, kept old path):"))
+            for f in unmatched:
+                lines.append(f"  {c.yellow(f['basename'])}")
+        lines.append("")
+        if summary["resolved"]:
+            lines.append(f"resolved: {c.green('yes')}")
+        else:
+            lines.append(f"resolved: {c.yellow('no')}  "
+                         f"({plur(summary['unmatched'], 'unmatched file')})")
+        lines.append("")
     lines.append(c.dim(f"  [{summary.get('_ms', 0)} ms]"))
     return "\n".join(lines) + "\n"
 
@@ -1714,6 +1880,11 @@ def main():
     pp.add_argument("to_signal", metavar="TO")
     pp.add_argument("--depth", type=int, default=0, metavar="N")
 
+    prb = cmd("rebind")
+    prb.add_argument("db", metavar="DB", type=Path)
+    prb.add_argument("--src-root", action="append", required=True, dest="src_root",
+                     metavar="DIR")
+
     args = p.parse_args()
     try:
         db = open_db(str(args.db))
@@ -1752,6 +1923,8 @@ def main():
             outcome = cone_path(db, args.from_signal, args.to_signal,
                                 args.depth, args.no_ctl, args.comb, args.through_latch,
                                 args.follow_ctl, args.ctl_depth, top)
+        elif cmd == "rebind":
+            outcome = rebind(db, args.src_root)
         else:
             raise DbError("BAD_COMMAND", f"unknown command: {cmd}")
         outcome["summary"]["_ms"] = int((time.perf_counter() - _t0) * 1000)
